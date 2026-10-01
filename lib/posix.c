@@ -131,7 +131,11 @@ static void copy_stat(struct stat *destination,
     destination->st_mode = source->st_mode;
     destination->st_size = source->st_size;
     destination->st_nlink = source->st_nlink;
-    destination->st_reserved = source->st_reserved;
+    destination->st_uid = source->st_uid;
+    destination->st_gid = source->st_gid;
+    destination->st_atime = source->st_atime;
+    destination->st_mtime = source->st_mtime;
+    destination->st_ctime = source->st_ctime;
 }
 
 int stat(const char *path, struct stat *buffer) {
@@ -160,7 +164,11 @@ int fstat(int fd, struct stat *buffer) {
     request.stat.st_mode = 0;
     request.stat.st_size = 0;
     request.stat.st_nlink = 0;
-    request.stat.st_reserved = 0;
+    request.stat.st_uid = 0;
+    request.stat.st_gid = 0;
+    request.stat.st_atime = 0;
+    request.stat.st_mtime = 0;
+    request.stat.st_ctime = 0;
     long result = request_call(POSIX_SYSCALL_FSTAT, &request);
     if (result < 0) return result_int(result);
     copy_stat(buffer, &request.stat);
