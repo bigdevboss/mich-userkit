@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
@@ -93,7 +94,40 @@ static int errno_demo(void) {
     if (open("/posixdemo-absent", O_RDONLY) != -1 || errno != ENOENT)
         return -1;
     errno = 0;
-    if (open("/", O_RDONLY) != -1 || errno != EISDIR) return -1;
+    if (open("/", O_WRONLY) != -1 || errno != EISDIR) return -1;
+    /* Directories open read-only so they can be listed; drain the root and
+       expect exactly the boot and dev directories the system mounts. */
+    int root_fd = open("/", O_RDONLY);
+    if (root_fd < 0) return -1;
+    struct dirent listing;
+    int seen_boot = 0;
+    int seen_dev = 0;
+    int seen_other = 0;
+    for (;;) {
+        int listed = getdents(root_fd, &listing, sizeof(listing));
+        if (listed < 0) return -1;
+        if (!listed) break;
+        int offset = 0;
+        while (offset < listed) {
+            struct dirent *record =
+                (struct dirent *)(void *)((unsigned char *)&listing + offset);
+            if (record->d_reclen < 26 || (record->d_reclen & 7)) return -1;
+            if (record->d_name[0] == 'b' && record->d_name[1] == 'o' &&
+                record->d_name[2] == 'o' && record->d_name[3] == 't' &&
+                !record->d_name[4] && record->d_type == DT_DIR) {
+                seen_boot++;
+            } else if (record->d_name[0] == 'd' && record->d_name[1] == 'e' &&
+                       record->d_name[2] == 'v' && !record->d_name[3] &&
+                       record->d_type == DT_DIR) {
+                seen_dev++;
+            } else {
+                seen_other++;
+            }
+            offset += record->d_reclen;
+        }
+    }
+    if (close(root_fd)) return -1;
+    if (!seen_boot || !seen_dev || seen_other) return -1;
     errno = 0;
     if (read(9999, buffer, sizeof(buffer)) != -1 || errno != EBADF)
         return -1;
