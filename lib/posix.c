@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/random.h>
 #include <mich/syscall.h>
@@ -173,6 +174,23 @@ int fstat(int fd, struct stat *buffer) {
     if (result < 0) return result_int(result);
     copy_stat(buffer, &request.stat);
     return 0;
+}
+
+int getdents(int fd, struct dirent *buffer, unsigned int length) {
+    if (!buffer || !length || length > POSIX_IO_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_getdents_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.descriptor = fd;
+    request.length = length;
+    long result = request_call(POSIX_SYSCALL_GETDENTS, &request);
+    if (result < 0) return result_int(result);
+    for (u32 index = 0; index < (u32)result; index++)
+        ((u8 *)buffer)[index] = request.data[index];
+    return (int)result;
 }
 
 int mkdir(const char *path, mode_t mode) {
