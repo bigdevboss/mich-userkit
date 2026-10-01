@@ -23,7 +23,11 @@ struct stat {
     unsigned int st_mode;
     unsigned int st_size;
     unsigned int st_nlink;
-    unsigned int st_reserved;
+    unsigned int st_uid;
+    unsigned int st_gid;
+    unsigned long long st_atime;
+    unsigned long long st_mtime;
+    unsigned long long st_ctime;
 };
 
 int stat(const char *path, struct stat *buffer);
