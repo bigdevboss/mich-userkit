@@ -16,6 +16,7 @@ int chdir(const char *path);
 char *getcwd(char *buffer, size_t size);
 int truncate(const char *path, off_t size);
 int chown(const char *path, uid_t owner, gid_t group);
+int link(const char *old_path, const char *new_path);
 
 pid_t fork(void);
 int execve(const char *path, char *const argv[], char *const envp[]);
