@@ -68,6 +68,35 @@ static int io_demo(void) {
     return unlink("/posixdemo-io") ? -1 : 0;
 }
 
+static int link_demo(void) {
+    static const char payload[] = "mich link demo";
+    char buffer[16];
+    int fd = open("/posixdemo-link", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    if (write(fd, payload, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    if (close(fd)) return -1;
+    if (link("/posixdemo-link", "/posixdemo-twin")) return -1;
+    errno = 0;
+    if (link("/posixdemo-link", "/posixdemo-twin") != -1 || errno != EEXIST)
+        return -1;
+    struct stat info;
+    if (stat("/posixdemo-twin", &info) || info.st_nlink != 2) return -1;
+    if (unlink("/posixdemo-link")) return -1;
+    if (stat("/posixdemo-twin", &info) || info.st_nlink != 1) return -1;
+    /* The surviving name still reads the bytes both names shared. */
+    int twin = open("/posixdemo-twin", O_RDONLY);
+    if (twin < 0) return -1;
+    if (read(twin, buffer, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    buffer[sizeof(payload) - 1] = 0;
+    if (close(twin)) return -1;
+    if (!string_equals(buffer, payload)) return -1;
+    return unlink("/posixdemo-twin") ? -1 : 0;
+}
+
 static int cwd_demo(void) {
     char buffer[32];
     if (mkdir("/posixdemo-dir", 0700)) return -1;
@@ -451,6 +480,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX libc file pass\n");
     if (entropy_demo()) return 90;
     mich_write("Mich x86_64: POSIX entropy pass\n");
+    if (link_demo()) return 91;
+    mich_write("Mich x86_64: POSIX application link pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;
