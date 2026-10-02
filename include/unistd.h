@@ -15,6 +15,7 @@ int dup2(int fd, int replacement);
 int chdir(const char *path);
 char *getcwd(char *buffer, size_t size);
 int truncate(const char *path, off_t size);
+int chown(const char *path, uid_t owner, gid_t group);
 
 pid_t fork(void);
 int execve(const char *path, char *const argv[], char *const envp[]);

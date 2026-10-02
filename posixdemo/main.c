@@ -128,6 +128,30 @@ static int errno_demo(void) {
     }
     if (close(root_fd)) return -1;
     if (!seen_boot || !seen_dev || seen_other) return -1;
+    /* Ownership and mode edits: chmod locks and unlocks a file, chown hands
+       it to another owner and takes it back, and the umask shapes a create. */
+    int perms_fd = open("/posixdemo-perms", O_RDWR | O_CREAT, 0600);
+    if (perms_fd < 0) return -1;
+    if (fchmod(perms_fd, 0)) return -1;
+    errno = 0;
+    if (open("/posixdemo-perms", O_RDONLY) != -1 || errno != EACCES)
+        return -1;
+    if (chmod("/posixdemo-perms", 0400)) return -1;
+    if (chown("/posixdemo-perms", 1, 1)) return -1;
+    errno = 0;
+    if (chmod("/posixdemo-perms", 0600) != -1 || errno != EPERM) return -1;
+    if (chown("/posixdemo-perms", 0, 0)) return -1;
+    if (chmod("/posixdemo-perms", 0600)) return -1;
+    if (close(perms_fd)) return -1;
+    if (unlink("/posixdemo-perms")) return -1;
+    if (umask(0) != 022) return -1;
+    int raw_fd = open("/posixdemo-raw", O_RDWR | O_CREAT, 0666);
+    if (raw_fd < 0) return -1;
+    struct stat raw_info;
+    if (fstat(raw_fd, &raw_info) || (raw_info.st_mode & 0777u) != 0666u)
+        return -1;
+    if (close(raw_fd) || unlink("/posixdemo-raw")) return -1;
+    umask(022);
     errno = 0;
     if (read(9999, buffer, sizeof(buffer)) != -1 || errno != EBADF)
         return -1;

@@ -35,5 +35,8 @@ int fstat(int fd, struct stat *buffer);
 int mkdir(const char *path, mode_t mode);
 int rmdir(const char *path);
 int unlink(const char *path);
+int chmod(const char *path, mode_t mode);
+int fchmod(int fd, mode_t mode);
+mode_t umask(mode_t mask);
 
 #endif

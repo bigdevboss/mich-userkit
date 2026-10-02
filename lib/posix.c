@@ -193,6 +193,44 @@ int getdents(int fd, struct dirent *buffer, unsigned int length) {
     return (int)result;
 }
 
+int chmod(const char *path, mode_t mode) {
+    struct posix_chmod_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    request.mode = (u32)mode;
+    return result_int(request_call(POSIX_SYSCALL_CHMOD, &request));
+}
+
+int fchmod(int fd, mode_t mode) {
+    struct posix_fchmod_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.descriptor = fd;
+    request.mode = (u32)mode;
+    return result_int(request_call(POSIX_SYSCALL_FCHMOD, &request));
+}
+
+int chown(const char *path, uid_t owner, gid_t group) {
+    struct posix_chown_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    request.uid = (i32)owner;
+    request.gid = (i32)group;
+    return result_int(request_call(POSIX_SYSCALL_CHOWN, &request));
+}
+
+mode_t umask(mode_t mask) {
+    struct posix_umask_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.mask = (u32)mask;
+    return (mode_t)request_call(POSIX_SYSCALL_UMASK, &request);
+}
+
 int mkdir(const char *path, mode_t mode) {
     struct posix_mode_path_request request;
     for (u32 index = 0; index < sizeof(request); index++) ((u8 *)&request)[index] = 0;

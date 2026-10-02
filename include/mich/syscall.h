@@ -29,6 +29,10 @@
 #define MICH_SYS_POSIX_BRK 208
 #define MICH_SYS_POSIX_GETRANDOM 209
 #define MICH_SYS_POSIX_GETDENTS 217
+#define MICH_SYS_POSIX_CHMOD 218
+#define MICH_SYS_POSIX_FCHMOD 219
+#define MICH_SYS_POSIX_CHOWN 220
+#define MICH_SYS_POSIX_UMASK 221
 
 long mich_syscall0(unsigned long number);
 long mich_syscall1(unsigned long number, unsigned long arg0);
