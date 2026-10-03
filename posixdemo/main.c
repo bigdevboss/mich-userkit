@@ -97,6 +97,77 @@ static int link_demo(void) {
     return unlink("/posixdemo-twin") ? -1 : 0;
 }
 
+static int rename_demo(void) {
+    static const char payload[] = "mich rename demo";
+    char buffer[24];
+    struct stat info;
+    if (mkdir("/posixdemo-move", 0700)) return -1;
+    int fd = open("/posixdemo-rename", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    if (write(fd, payload, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    if (close(fd)) return -1;
+    /* Moving the name across directories keeps the bytes and drops the
+       old name; renaming a name onto itself changes nothing. */
+    if (rename("/posixdemo-rename", "/posixdemo-move/landed")) return -1;
+    if (rename("/posixdemo-move/landed", "/posixdemo-move/landed")) return -1;
+    errno = 0;
+    if (stat("/posixdemo-rename", &info) != -1 || errno != ENOENT)
+        return -1;
+    if (stat("/posixdemo-move/landed", &info) ||
+        info.st_nlink != 1 || info.st_size != (off_t)(sizeof(payload) - 1))
+        return -1;
+    /* A same-kind target leaves quietly and the moved name takes its
+       place. */
+    fd = open("/posixdemo-victim", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    if (write(fd, "victim", 6) != 6) return -1;
+    if (close(fd)) return -1;
+    if (rename("/posixdemo-move/landed", "/posixdemo-victim")) return -1;
+    errno = 0;
+    if (stat("/posixdemo-move/landed", &info) != -1 || errno != ENOENT)
+        return -1;
+    fd = open("/posixdemo-victim", O_RDONLY);
+    if (fd < 0) return -1;
+    if (read(fd, buffer, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    buffer[sizeof(payload) - 1] = 0;
+    if (close(fd)) return -1;
+    if (!string_equals(buffer, payload)) return -1;
+    /* The replace matrix and the cross-filesystem refusal carry their
+       own errno values. */
+    errno = 0;
+    if (rename("/posixdemo-victim", "/posixdemo-move") != -1 ||
+        errno != EISDIR)
+        return -1;
+    errno = 0;
+    if (rename("/posixdemo-move", "/posixdemo-victim") != -1 ||
+        errno != ENOTDIR)
+        return -1;
+    /* ENOTEMPTY belongs to the replaced target: a full source directory
+       onto an empty one is a legal move. */
+    if (mkdir("/posixdemo-move/inner", 0700)) return -1;
+    if (mkdir("/posixdemo-full", 0700)) return -1;
+    fd = open("/posixdemo-full/occupant", O_WRONLY | O_CREAT, 0600);
+    if (fd < 0) return -1;
+    if (close(fd)) return -1;
+    errno = 0;
+    if (rename("/posixdemo-move", "/posixdemo-full") != -1 ||
+        errno != ENOTEMPTY)
+        return -1;
+    errno = 0;
+    if (rename("/posixdemo-victim", "/boot/posixdemo-cross") != -1 ||
+        errno != EXDEV)
+        return -1;
+    if (unlink("/posixdemo-full/occupant") ||
+        rmdir("/posixdemo-move/inner") || rmdir("/posixdemo-move") ||
+        rmdir("/posixdemo-full") || unlink("/posixdemo-victim"))
+        return -1;
+    return 0;
+}
+
 static int cwd_demo(void) {
     char buffer[32];
     if (mkdir("/posixdemo-dir", 0700)) return -1;
@@ -482,6 +553,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX entropy pass\n");
     if (link_demo()) return 91;
     mich_write("Mich x86_64: POSIX application link pass\n");
+    if (rename_demo()) return 92;
+    mich_write("Mich x86_64: POSIX application rename pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;
