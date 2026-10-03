@@ -245,6 +245,55 @@ int rename(const char *old_path, const char *new_path) {
     return result_int(request_call(POSIX_SYSCALL_RENAME, &request));
 }
 
+int symlink(const char *target, const char *path) {
+    struct posix_symlink_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.target, target);
+    if (copied) return result_int(copied);
+    copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    return result_int(request_call(POSIX_SYSCALL_SYMLINK, &request));
+}
+
+ssize_t readlink(const char *path, char *buffer, size_t size) {
+    if (!buffer || !size) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_readlink_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    long result = request_call(POSIX_SYSCALL_READLINK, &request);
+    if (result < 0) return result_int(result);
+    /* The system call keeps the POSIX contract: the buffer gets the raw
+       bytes, no terminator, and a smaller caller buffer truncates while
+       the return keeps the count actually placed. */
+    size_t count = (size_t)result;
+    if (count > size) count = size;
+    for (size_t index = 0; index < count; index++)
+        buffer[index] = request.data[index];
+    return (ssize_t)count;
+}
+
+int lstat(const char *path, struct stat *buffer) {
+    if (!buffer) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_stat_path_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    long result = request_call(POSIX_SYSCALL_LSTAT, &request);
+    if (result < 0) return result_int(result);
+    copy_stat(buffer, &request.stat);
+    return 0;
+}
+
 mode_t umask(mode_t mask) {
     struct posix_umask_request request;
     for (u32 index = 0; index < sizeof(request); index++)

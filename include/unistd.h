@@ -18,6 +18,8 @@ int truncate(const char *path, off_t size);
 int chown(const char *path, uid_t owner, gid_t group);
 int link(const char *old_path, const char *new_path);
 int rename(const char *old_path, const char *new_path);
+int symlink(const char *target, const char *path);
+ssize_t readlink(const char *path, char *buffer, size_t size);
 
 pid_t fork(void);
 int execve(const char *path, char *const argv[], char *const envp[]);
