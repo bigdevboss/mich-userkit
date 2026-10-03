@@ -424,3 +424,13 @@ int ftruncate(int fd, off_t length) {
     request.length = length;
     return result_int(request_call(POSIX_SYSCALL_FTRUNCATE, &request));
 }
+
+int fsync(int fd) {
+    struct posix_fd_request request = { fd, 0 };
+    return result_int(request_call(POSIX_SYSCALL_FSYNC, &request));
+}
+
+int fdatasync(int fd) {
+    struct posix_fd_request request = { fd, 0 };
+    return result_int(request_call(POSIX_SYSCALL_FDATASYNC, &request));
+}

@@ -75,6 +75,11 @@ static int io_demo(void) {
     if (fstat(fd, &info) || info.st_size != 32) return -1;
     if (pread(fd, first, 1, 31) != 1 || first[0]) return -1;
     if (ftruncate(fd, (off_t)(sizeof(payload) - 1))) return -1;
+    /* A durability call rides the format staging path and has to leave
+       the file readable through the plain cursor afterwards. */
+    if (fsync(fd) || fdatasync(alias)) return -1;
+    if (pread(fd, first, 2, 8) != 2 || first[0] != 'Z' || first[1] != 'Z')
+        return -1;
     if (close(alias) || close(fd)) return -1;
     return unlink("/posixdemo-io") ? -1 : 0;
 }

@@ -18,6 +18,8 @@ int truncate(const char *path, off_t size);
 int ftruncate(int fd, off_t length);
 ssize_t pread(int fd, void *buffer, size_t length, off_t offset);
 ssize_t pwrite(int fd, const void *buffer, size_t length, off_t offset);
+int fsync(int fd);
+int fdatasync(int fd);
 int chown(const char *path, uid_t owner, gid_t group);
 int link(const char *old_path, const char *new_path);
 int rename(const char *old_path, const char *new_path);
