@@ -87,6 +87,53 @@ ssize_t write(int fd, const void *buffer, size_t length) {
     return io_call(POSIX_SYSCALL_WRITE, fd, (void *)buffer, length);
 }
 
+// The positioned calls share the plain io chunking but pin every chunk to
+// an explicit offset, so the descriptor cursor never moves.
+static ssize_t pio_call(u32 number, int fd, void *buffer, size_t length,
+                        off_t offset) {
+    if (!buffer && length) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t done = 0;
+    while (done < length) {
+        u32 chunk = length - done > POSIX_IO_MAX ? POSIX_IO_MAX :
+            (u32)(length - done);
+        struct posix_pio_request request;
+        request.descriptor = fd;
+        request.reserved = 0;
+        request.offset = offset + (off_t)done;
+        request.length = chunk;
+        if (number == POSIX_SYSCALL_PWRITE)
+            for (u32 index = 0; index < chunk; index++)
+                request.data[index] = ((const u8 *)buffer)[done + index];
+        long result = request_call(number, &request);
+        if (result < 0) {
+            if (done) return (ssize_t)done;
+            errno = (int)-result;
+            return -1;
+        }
+        if (number == POSIX_SYSCALL_PREAD)
+            for (u32 index = 0; index < (u32)result; index++)
+                ((u8 *)buffer)[done + index] = request.data[index];
+        done += (u32)result;
+        if ((u32)result < chunk) break;
+    }
+    return (ssize_t)done;
+}
+
+ssize_t pread(int fd, void *buffer, size_t length, off_t offset) {
+    return pio_call(POSIX_SYSCALL_PREAD, fd, buffer, length, offset);
+}
+
+ssize_t pwrite(int fd, const void *buffer, size_t length, off_t offset) {
+    return pio_call(POSIX_SYSCALL_PWRITE, fd, (void *)buffer, length, offset);
+}
+
 off_t lseek(int fd, off_t offset, int whence) {
     struct posix_seek_request request;
     request.descriptor = fd;
@@ -368,4 +415,12 @@ int truncate(const char *path, off_t size) {
     int copied = copy_path(request.path, path);
     if (copied) return result_int(copied);
     return result_int(request_call(POSIX_SYSCALL_TRUNCATE, &request));
+}
+
+int ftruncate(int fd, off_t length) {
+    struct posix_ftruncate_request request;
+    request.descriptor = fd;
+    request.reserved = 0;
+    request.length = length;
+    return result_int(request_call(POSIX_SYSCALL_FTRUNCATE, &request));
 }
