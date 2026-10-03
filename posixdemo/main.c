@@ -64,6 +64,18 @@ static int io_demo(void) {
         (info.st_mode & 0777u) != 0600u ||
         info.st_size != (off_t)(sizeof(payload) - 1))
         return -1;
+    /* access mirrors the permission picture the descriptors already
+       proved: 0600 opens read and write for the owner and keeps the
+       execute question closed. */
+    if (access("/posixdemo-io", R_OK | W_OK)) return -1;
+    errno = 0;
+    if (access("/posixdemo-io", X_OK) != -1 || errno != EACCES) return -1;
+    errno = 0;
+    if (access("/posixdemo-missing", F_OK) != -1 || errno != ENOENT)
+        return -1;
+
+
+
     /* The positioned calls address an offset without touching the shared
        cursor, and a truncate extension reads back as zeroes. */
     if (pwrite(fd, "ZZ", 2, 8) != 2) return -1;

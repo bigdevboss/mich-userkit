@@ -26,6 +26,18 @@ int rename(const char *old_path, const char *new_path);
 int symlink(const char *target, const char *path);
 ssize_t readlink(const char *path, char *buffer, size_t size);
 
+/* access modes */
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+
+/* access reports the permission picture at the instant of the call. The
+   answer can go stale before the caller acts on it, because nothing stops
+   another process from chmod'ing or unlinking the path in between, so the
+   only safe use is reporting an error, never preflighting an operation. */
+int access(const char *path, int mode);
+
 pid_t fork(void);
 int execve(const char *path, char *const argv[], char *const envp[]);
 void _exit(int code) __attribute__((noreturn));
