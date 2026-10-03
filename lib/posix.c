@@ -234,6 +234,17 @@ int link(const char *old_path, const char *new_path) {
     return result_int(request_call(POSIX_SYSCALL_LINK, &request));
 }
 
+int rename(const char *old_path, const char *new_path) {
+    struct posix_rename_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.old_path, old_path);
+    if (copied) return result_int(copied);
+    copied = copy_path(request.new_path, new_path);
+    if (copied) return result_int(copied);
+    return result_int(request_call(POSIX_SYSCALL_RENAME, &request));
+}
+
 mode_t umask(mode_t mask) {
     struct posix_umask_request request;
     for (u32 index = 0; index < sizeof(request); index++)
