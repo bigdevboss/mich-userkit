@@ -64,6 +64,17 @@ static int io_demo(void) {
         (info.st_mode & 0777u) != 0600u ||
         info.st_size != (off_t)(sizeof(payload) - 1))
         return -1;
+    /* The positioned calls address an offset without touching the shared
+       cursor, and a truncate extension reads back as zeroes. */
+    if (pwrite(fd, "ZZ", 2, 8) != 2) return -1;
+    if (lseek(alias, 0, 1) != (off_t)(sizeof(payload) - 1)) return -1;
+    if (pread(fd, first, 2, 8) != 2 || first[0] != 'Z' || first[1] != 'Z')
+        return -1;
+    if (lseek(alias, 0, 1) != (off_t)(sizeof(payload) - 1)) return -1;
+    if (ftruncate(fd, 32)) return -1;
+    if (fstat(fd, &info) || info.st_size != 32) return -1;
+    if (pread(fd, first, 1, 31) != 1 || first[0]) return -1;
+    if (ftruncate(fd, (off_t)(sizeof(payload) - 1))) return -1;
     if (close(alias) || close(fd)) return -1;
     return unlink("/posixdemo-io") ? -1 : 0;
 }
