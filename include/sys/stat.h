@@ -6,6 +6,7 @@
 #define S_IFMT 0170000u
 #define S_IFREG 0100000u
 #define S_IFDIR 0040000u
+#define S_IFLNK 0120000u
 #define S_IRUSR 0400u
 #define S_IWUSR 0200u
 #define S_IXUSR 0100u
@@ -18,6 +19,7 @@
 
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 #define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
+#define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
 
 struct stat {
     unsigned int st_mode;
@@ -31,6 +33,7 @@ struct stat {
 };
 
 int stat(const char *path, struct stat *buffer);
+int lstat(const char *path, struct stat *buffer);
 int fstat(int fd, struct stat *buffer);
 int mkdir(const char *path, mode_t mode);
 int rmdir(const char *path);

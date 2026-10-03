@@ -168,6 +168,63 @@ static int rename_demo(void) {
     return 0;
 }
 
+static int symlink_demo(void) {
+    static const char payload[] = "mich symlink demo";
+    char buffer[24];
+    char target[32];
+    struct stat info;
+    int fd = open("/posixdemo-real", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    if (write(fd, payload, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    if (close(fd)) return -1;
+    if (symlink("/posixdemo-real", "/posixdemo-link")) return -1;
+    errno = 0;
+    if (symlink("/posixdemo-real", "/posixdemo-link") != -1 ||
+        errno != EEXIST)
+        return -1;
+    /* stat follows the link, lstat does not, and readlink carries the
+       target string without a terminator. */
+    if (stat("/posixdemo-link", &info) || !S_ISREG(info.st_mode) ||
+        info.st_size != (off_t)(sizeof(payload) - 1))
+        return -1;
+    if (lstat("/posixdemo-link", &info) || !S_ISLNK(info.st_mode) ||
+        info.st_size != (off_t)15)
+        return -1;
+    int got = readlink("/posixdemo-link", target, sizeof(target));
+    if (got != 15) return -1;
+    if (target[0] != '/' || target[1] != 'p' || target[14] != 'l')
+        return -1;
+    /* Opening the link reaches the file behind it. */
+    fd = open("/posixdemo-link", O_RDONLY);
+    if (fd < 0) return -1;
+    if (read(fd, buffer, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    buffer[sizeof(payload) - 1] = 0;
+    if (close(fd)) return -1;
+    if (!string_equals(buffer, payload)) return -1;
+    /* A dangling link reads back but resolves to nothing, and two links
+       pointing at each other never resolve at all. */
+    if (symlink("/posixdemo-missing", "/posixdemo-dangling")) return -1;
+    errno = 0;
+    if (stat("/posixdemo-dangling", &info) != -1 || errno != ENOENT)
+        return -1;
+    got = readlink("/posixdemo-dangling", target, sizeof(target));
+    if (got != 18) return -1;
+    if (symlink("/posixdemo-loop-b", "/posixdemo-loop-a")) return -1;
+    if (symlink("/posixdemo-loop-a", "/posixdemo-loop-b")) return -1;
+    errno = 0;
+    if (stat("/posixdemo-loop-a", &info) != -1 || errno != ELOOP)
+        return -1;
+    if (unlink("/posixdemo-link") || unlink("/posixdemo-dangling") ||
+        unlink("/posixdemo-loop-a") || unlink("/posixdemo-loop-b") ||
+        unlink("/posixdemo-real"))
+        return -1;
+    return 0;
+}
+
 static int cwd_demo(void) {
     char buffer[32];
     if (mkdir("/posixdemo-dir", 0700)) return -1;
@@ -555,6 +612,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX application link pass\n");
     if (rename_demo()) return 92;
     mich_write("Mich x86_64: POSIX application rename pass\n");
+    if (symlink_demo()) return 93;
+    mich_write("Mich x86_64: POSIX application symlink pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;
