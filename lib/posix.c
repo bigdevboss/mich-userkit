@@ -11,11 +11,18 @@ int errno;
 
 static int copy_path(char destination[VFS_PATH_MAX], const char *source) {
     if (!source) return -EINVAL;
-    for (u32 index = 0; index < VFS_PATH_MAX; index++) {
-        destination[index] = source[index];
-        if (!source[index]) return 0;
+    u32 length = 0;
+    while (length + 1 < VFS_PATH_MAX && source[length]) {
+        destination[length] = source[length];
+        length++;
     }
-    return -ENAMETOOLONG;
+    if (source[length]) return -ENAMETOOLONG;
+    /* The dispatcher rejects a request whose last path byte is not zero,
+       so the whole tail past the string must be cleared, not just the
+       terminator: leftover stack bytes would read as a non canonical path. */
+    for (u32 index = length; index < VFS_PATH_MAX; index++)
+        destination[index] = 0;
+    return 0;
 }
 
 static long request_call(u32 number, void *request) {
