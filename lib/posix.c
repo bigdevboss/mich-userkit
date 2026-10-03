@@ -434,3 +434,15 @@ int fdatasync(int fd) {
     struct posix_fd_request request = { fd, 0 };
     return result_int(request_call(POSIX_SYSCALL_FDATASYNC, &request));
 }
+
+int access(const char *path, int mode) {
+    if (mode & ~(R_OK | W_OK | X_OK)) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_access_request request;
+    request.mode = (u32)mode;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    return result_int(request_call(POSIX_SYSCALL_ACCESS, &request));
+}
