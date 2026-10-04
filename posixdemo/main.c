@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,6 +300,77 @@ static int times_demo(void) {
         return -1;
     if (close(fd)) return -1;
     return unlink("/posixdemo-times");
+}
+
+static int realpath_demo(void) {
+    char path[PATH_MAX];
+    char long_path[320];
+    if (mkdir("/posixdemo-canonical", 0755)) return -1;
+    int fd = open("/posixdemo-canonical/target.txt", O_WRONLY | O_CREAT, 0600);
+    if (fd < 0) return -1;
+    if (close(fd)) return -1;
+    /* Repeated slashes, "." and ".." fold into the canonical form, and the
+       root is its own parent. */
+    if (!realpath("/posixdemo-canonical//./../posixdemo-canonical/./target.txt",
+                  path) ||
+        !string_equals(path, "/posixdemo-canonical/target.txt"))
+        return -1;
+    if (!realpath("/posixdemo-canonical/..", path) ||
+        !string_equals(path, "/"))
+        return -1;
+    /* A relative path starts from the working directory. */
+    if (chdir("/posixdemo-canonical")) return -1;
+    if (!realpath("target.txt", path) ||
+        !string_equals(path, "/posixdemo-canonical/target.txt"))
+        return -1;
+    if (!realpath("../posixdemo-canonical/target.txt", path) ||
+        !string_equals(path, "/posixdemo-canonical/target.txt"))
+        return -1;
+    if (chdir("/")) return -1;
+    /* Links expand: an absolute target restarts the walk at the root, a
+       relative one continues from the link's directory. */
+    if (symlink("/posixdemo-canonical/target.txt", "/posixdemo-canonical/absolute"))
+        return -1;
+    if (!realpath("/posixdemo-canonical/absolute", path) ||
+        !string_equals(path, "/posixdemo-canonical/target.txt"))
+        return -1;
+    if (symlink("target.txt", "/posixdemo-canonical/relative")) return -1;
+    if (!realpath("/posixdemo-canonical/relative", path) ||
+        !string_equals(path, "/posixdemo-canonical/target.txt"))
+        return -1;
+    /* A NULL buffer makes the call allocate the answer itself. */
+    char *heap = realpath("/posixdemo-canonical/target.txt", 0);
+    if (!heap || !string_equals(heap, "/posixdemo-canonical/target.txt"))
+        return -1;
+    free(heap);
+    /* The error surface: a missing component, a non-directory in the
+       middle, a link loop, an empty path, and a result that cannot fit. */
+    errno = 0;
+    if (realpath("/posixdemo-canonical/missing", path) || errno != ENOENT)
+        return -1;
+    errno = 0;
+    if (realpath("/posixdemo-canonical/target.txt/inside", path) ||
+        errno != ENOTDIR)
+        return -1;
+    if (symlink("loop-b", "/posixdemo-canonical/loop-a")) return -1;
+    if (symlink("loop-a", "/posixdemo-canonical/loop-b")) return -1;
+    errno = 0;
+    if (realpath("/posixdemo-canonical/loop-a", path) || errno != ELOOP)
+        return -1;
+    errno = 0;
+    if (realpath("", path) || errno != ENOENT) return -1;
+    long_path[0] = '/';
+    for (int index = 1; index < 300; index++) long_path[index] = 'x';
+    long_path[300] = 0;
+    errno = 0;
+    if (realpath(long_path, path) || errno != ENAMETOOLONG) return -1;
+    if (unlink("/posixdemo-canonical/absolute") ||
+        unlink("/posixdemo-canonical/relative") ||
+        unlink("/posixdemo-canonical/loop-a") ||
+        unlink("/posixdemo-canonical/loop-b") ||
+        unlink("/posixdemo-canonical/target.txt"))
+        return -1;
+    return rmdir("/posixdemo-canonical");
 }
 
 static int cwd_demo(void) {
@@ -692,6 +764,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX application symlink pass\n");
     if (times_demo()) return 94;
     mich_write("Mich x86_64: POSIX application times pass\n");
+    if (realpath_demo()) return 95;
+    mich_write("Mich x86_64: POSIX libc realpath pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;

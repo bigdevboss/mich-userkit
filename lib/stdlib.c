@@ -1,6 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <mich/syscall.h>
 
 /* Page-mapped heap: blocks live in the arena between the heap base and the
@@ -155,4 +158,114 @@ void *realloc(void *pointer, size_t size) {
     memcpy(fresh, pointer, block->size);
     free(pointer);
     return fresh;
+}
+
+// Trim the canonical prefix back to its parent directory. The root is its
+// own parent, the same way the kernel resolves ".." there.
+static void realpath_parent(char *resolved) {
+    size_t cut = 0;
+    for (size_t index = 0; resolved[index]; index++)
+        if (resolved[index] == '/' && index) cut = index;
+    if (!cut) {
+        resolved[0] = '/';
+        resolved[1] = 0;
+        return;
+    }
+    resolved[cut] = 0;
+}
+
+static int realpath_push(char *resolved, const char *component, size_t length) {
+    size_t base = (size_t)strlen(resolved);
+    size_t separator = base > 1 ? 1 : 0;
+    if (base + separator + length + 1 > PATH_MAX) return -1;
+    size_t index = base;
+    if (separator) resolved[index++] = '/';
+    for (size_t part = 0; part < length; part++) resolved[index++] = component[part];
+    resolved[index] = 0;
+    return 0;
+}
+
+char *realpath(const char *path, char *resolved) {
+    if (!path || !path[0]) {
+        errno = ENOENT;
+        return 0;
+    }
+    if (!resolved) {
+        resolved = malloc(PATH_MAX);
+        if (!resolved) {
+            errno = ENOMEM;
+            return 0;
+        }
+    }
+    // An input longer than the path bound can never resolve: a symlink
+    // substitution only ever lengthens what is left to walk.
+    size_t input = strlen(path);
+    if (input >= PATH_MAX) {
+        errno = ENAMETOOLONG;
+        return 0;
+    }
+    char remaining[PATH_MAX];
+    char target[PATH_MAX];
+    struct stat info;
+    if (path[0] == '/') {
+        resolved[0] = '/';
+        resolved[1] = 0;
+    } else if (!getcwd(resolved, PATH_MAX)) {
+        return 0;
+    }
+    for (size_t index = 0; index <= input; index++) remaining[index] = path[index];
+    size_t links = 0;
+    size_t cursor = 0;
+    while (remaining[cursor]) {
+        while (remaining[cursor] == '/') cursor++;
+        if (!remaining[cursor]) break;
+        const char *component = remaining + cursor;
+        size_t length = 0;
+        while (remaining[cursor] && remaining[cursor] != '/') {
+            cursor++;
+            length++;
+        }
+        if (length == 1u && component[0] == '.') continue;
+        if (length == 2u && component[0] == '.' && component[1] == '.') {
+            realpath_parent(resolved);
+            continue;
+        }
+        // A component joins the answer only after the kernel vouches for
+        // it, so the resolution cannot drift from what stat itself sees.
+        if (realpath_push(resolved, component, length)) {
+            errno = ENAMETOOLONG;
+            return 0;
+        }
+        if (lstat(resolved, &info)) return 0;
+        if (!S_ISLNK(info.st_mode)) continue;
+        if (++links > SYMLOOP_MAX) {
+            errno = ELOOP;
+            return 0;
+        }
+        ssize_t got = readlink(resolved, target, PATH_MAX - 1);
+        if (got < 0) return 0;
+        target[got] = 0;
+        realpath_parent(resolved);
+        // The target takes the link's place at the head of what is left:
+        // a relative one continues from the link's directory, an absolute
+        // one restarts the walk from the root. The tail moves first so
+        // the copy never runs over bytes it still needs.
+        size_t tail = 0;
+        while (remaining[cursor + tail]) tail++;
+        if ((size_t)got + 1 + tail + 1 > PATH_MAX) {
+            errno = ENAMETOOLONG;
+            return 0;
+        }
+        for (size_t index = tail + 1; index-- > 0;)
+            remaining[(size_t)got + 1 + index] = remaining[cursor + index];
+        for (size_t index = 0; index < (size_t)got; index++)
+            remaining[index] = target[index];
+        remaining[got] = '/';
+        cursor = 0;
+        if (target[0] == '/') {
+            resolved[0] = '/';
+            resolved[1] = 0;
+        }
+    }
+    return resolved;
 }
