@@ -253,6 +253,54 @@ static int symlink_demo(void) {
     return 0;
 }
 
+static int times_demo(void) {
+    struct stat info;
+    struct timespec chosen[2];
+    int fd = open("/posixdemo-times", O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    /* Chosen pairs land whole: seconds and nanoseconds both survive the
+       round trip through the path call. */
+    chosen[0].tv_sec = 1000000000;
+    chosen[0].tv_nsec = 123456789;
+    chosen[1].tv_sec = 1000000001;
+    chosen[1].tv_nsec = 987654321;
+    if (utimensat(AT_FDCWD, "/posixdemo-times", chosen, 0)) return -1;
+    if (stat("/posixdemo-times", &info) ||
+        info.st_atime != 1000000000 || info.st_atime_nsec != 123456789 ||
+        info.st_mtime != 1000000001 || info.st_mtime_nsec != 987654321)
+        return -1;
+    /* OMIT leaves one half standing while the other moves. */
+    chosen[0].tv_nsec = UTIME_OMIT;
+    chosen[1].tv_sec = 2000000000;
+    chosen[1].tv_nsec = 1;
+    if (utimensat(AT_FDCWD, "/posixdemo-times", chosen, 0)) return -1;
+    if (stat("/posixdemo-times", &info) ||
+        info.st_atime != 1000000000 || info.st_atime_nsec != 123456789 ||
+        info.st_mtime != 2000000000 || info.st_mtime_nsec != 1)
+        return -1;
+    /* A NULL pair is the classic utime request, and the descriptor twin
+       carries it without a path at all. The wall clock answers with real
+       seconds, so NOW lands anywhere at or past the last chosen pair. */
+    if (futimens(fd, 0)) return -1;
+    if (fstat(fd, &info) || info.st_mtime < 1000000001 ||
+        info.st_mtime_nsec > 999999999)
+        return -1;
+    /* A nanosecond half outside [0, 999999999] is EINVAL, and so is a
+       dirfd or flag the wrapper does not carry. */
+    errno = 0;
+    chosen[0].tv_sec = 0;
+    chosen[0].tv_nsec = 1000000000;
+    chosen[1].tv_nsec = 0;
+    if (utimensat(AT_FDCWD, "/posixdemo-times", chosen, 0) != -1 ||
+        errno != EINVAL)
+        return -1;
+    errno = 0;
+    if (utimensat(3, "/posixdemo-times", 0, 0) != -1 || errno != EINVAL)
+        return -1;
+    if (close(fd)) return -1;
+    return unlink("/posixdemo-times");
+}
+
 static int cwd_demo(void) {
     char buffer[32];
     if (mkdir("/posixdemo-dir", 0700)) return -1;
@@ -642,6 +690,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX application rename pass\n");
     if (symlink_demo()) return 93;
     mich_write("Mich x86_64: POSIX application symlink pass\n");
+    if (times_demo()) return 94;
+    mich_write("Mich x86_64: POSIX application times pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;
