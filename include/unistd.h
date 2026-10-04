@@ -44,5 +44,9 @@ void _exit(int code) __attribute__((noreturn));
 pid_t waitpid(pid_t pid, int *status, int options);
 pid_t getpid(void);
 pid_t getppid(void);
+/* Park the calling task for whole seconds. Nothing interrupts the park yet,
+   so the answer is always zero unslept time; the shape is what signals will
+   change. */
+unsigned int sleep(unsigned int seconds);
 
 #endif

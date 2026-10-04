@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -496,4 +497,71 @@ int access(const char *path, int mode) {
     int copied = copy_path(request.path, path);
     if (copied) return result_int(copied);
     return result_int(request_call(POSIX_SYSCALL_ACCESS, &request));
+}
+
+static int clock_call(u32 number, clockid_t clock, struct timespec *out) {
+    if (!out) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_clock_request request = { (u32)clock, 0, 0, 0 };
+    if (result_int(request_call(number, &request))) return -1;
+    out->tv_sec = (time_t)request.sec;
+    out->tv_nsec = (long)request.nsec;
+    return 0;
+}
+
+int clock_gettime(clockid_t clock, struct timespec *out) {
+    return clock_call(POSIX_SYSCALL_CLOCK_GETTIME, clock, out);
+}
+
+int clock_getres(clockid_t clock, struct timespec *out) {
+    return clock_call(POSIX_SYSCALL_CLOCK_GETRES, clock, out);
+}
+
+int nanosleep(const struct timespec *requested, struct timespec *remaining) {
+    if (!requested) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_nanosleep_request request = {
+        requested->tv_sec, requested->tv_nsec, 0, 0
+    };
+    if (result_int(request_call(POSIX_SYSCALL_NANOSLEEP, &request))) return -1;
+    /* Nothing interrupts the park yet, so the kernel always reports a zero
+       remainder; the copy keeps the shape signals will need. */
+    if (remaining) {
+        remaining->tv_sec = (time_t)request.remaining_sec;
+        remaining->tv_nsec = (long)request.remaining_nsec;
+    }
+    return 0;
+}
+
+time_t time(time_t *out) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now)) return (time_t)-1;
+    if (out) *out = now.tv_sec;
+    return now.tv_sec;
+}
+
+unsigned int sleep(unsigned int seconds) {
+    struct timespec interval;
+    interval.tv_sec = (time_t)seconds;
+    interval.tv_nsec = 0;
+    nanosleep(&interval, 0);
+    return 0;
+}
+
+int gettimeofday(struct timeval *out, void *timezone) {
+    /* The profile carries no timezone table, so the second pointer stays
+       NULL rather than silently reading garbage. */
+    if (!out || timezone) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now)) return -1;
+    out->tv_sec = now.tv_sec;
+    out->tv_usec = now.tv_nsec / 1000;
+    return 0;
 }

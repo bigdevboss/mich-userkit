@@ -9,6 +9,7 @@
 #include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <mich/syscall.h>
 
 /* First compatibility-claim fixture (profile step 6): a real static POSIX
@@ -677,6 +678,64 @@ static int entropy_demo(void) {
     return 0;
 }
 
+static int time_demo(void) {
+    struct timespec resolution;
+    if (clock_getres(CLOCK_MONOTONIC, &resolution) ||
+        resolution.tv_sec || resolution.tv_nsec != 10000000L)
+        return -1;
+    if (clock_getres(CLOCK_REALTIME, &resolution) ||
+        resolution.tv_sec || resolution.tv_nsec != 10000000L)
+        return -1;
+    struct timespec before;
+    if (clock_gettime(CLOCK_MONOTONIC, &before)) return -1;
+    struct timespec interval;
+    interval.tv_sec = 0;
+    interval.tv_nsec = 20000000L;
+    struct timespec remaining;
+    if (nanosleep(&interval, &remaining) || remaining.tv_sec ||
+        remaining.tv_nsec)
+        return -1;
+    struct timespec after;
+    if (clock_gettime(CLOCK_MONOTONIC, &after)) return -1;
+    /* The kernel rounds up to whole ticks, so the slept span is never
+       shorter than the requested twenty milliseconds. */
+    long slept = (long)(after.tv_sec - before.tv_sec) * 1000000000L +
+        (after.tv_nsec - before.tv_nsec);
+    if (slept < 20000000L) return -1;
+    /* Monotonic never runs backwards across the sleep. */
+    if (after.tv_sec < before.tv_sec) return -1;
+    struct timespec wall;
+    if (clock_gettime(CLOCK_REALTIME, &wall) || wall.tv_sec < 1790240000LL ||
+        wall.tv_nsec < 0 || wall.tv_nsec > 999999999L)
+        return -1;
+    /* time and gettimeofday draw on the same wall clock, so the two
+       readings stay inside a one second window. */
+    time_t stamp = time(0);
+    struct timeval day;
+    if (gettimeofday(&day, 0) || day.tv_sec < stamp - 1 ||
+        day.tv_sec > stamp + 1 || day.tv_usec < 0 || day.tv_usec > 999999L)
+        return -1;
+    if (gettimeofday(&day, (void *)1) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (clock_gettime(7, &before) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (clock_getres(7, &before) != -1 || errno != EINVAL) return -1;
+    struct timespec bogus = { -1, 0 };
+    errno = 0;
+    if (nanosleep(&bogus, 0) != -1 || errno != EINVAL) return -1;
+    bogus.tv_sec = 0;
+    bogus.tv_nsec = -1;
+    errno = 0;
+    if (nanosleep(&bogus, 0) != -1 || errno != EINVAL) return -1;
+    bogus.tv_nsec = 1000000000L;
+    errno = 0;
+    if (nanosleep(&bogus, 0) != -1 || errno != EINVAL) return -1;
+    /* A zero interval is a scheduling point, not a park. */
+    bogus.tv_nsec = 0;
+    if (nanosleep(&bogus, 0)) return -1;
+    return 0;
+}
+
 static int process_demo(void) {
     static const char payload[] = "posixdemo-child-payload";
     char *const child_argv[] = { "/posixdemo", "child", 0 };
@@ -766,6 +825,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX application times pass\n");
     if (realpath_demo()) return 95;
     mich_write("Mich x86_64: POSIX libc realpath pass\n");
+    if (time_demo()) return 96;
+    mich_write("Mich x86_64: POSIX clocks pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;
