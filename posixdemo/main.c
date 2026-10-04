@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <mich/syscall.h>
@@ -736,6 +737,165 @@ static int time_demo(void) {
     return 0;
 }
 
+static volatile sig_atomic_t signal_note;
+
+static void note_signal(int signo) {
+    signal_note = signo;
+}
+
+static void exit_from_handler(int signo) {
+    signal_note = signo;
+    _exit(77);
+}
+
+static int signal_demo(void) {
+    struct sigaction action;
+    struct sigaction previous;
+
+    /* A caught signal posted to the caller itself is delivered on the
+       syscall exit, and the restorer path resumes the interrupted code. */
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = note_signal;
+    action.sa_flags = 0;
+    action.sa_restorer = 0;
+    if (sigaction(SIGUSR1, &action, &previous)) return -1;
+    signal_note = 0;
+    if (raise(SIGUSR1)) return -1;
+    if (signal_note != SIGUSR1) return -1;
+    if (previous.sa_handler != SIG_DFL) return -1;
+
+    /* A blocked signal parks instead of delivering, sigpending shows it,
+       and opening the mask delivers on the unblock exit. */
+    sigset_t blocked;
+    sigset_t pending;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR1);
+    if (sigprocmask(SIG_BLOCK, &blocked, 0)) return -1;
+    signal_note = 0;
+    if (raise(SIGUSR1)) return -1;
+    if (signal_note) return -1;
+    if (sigpending(&pending) || !sigismember(&pending, SIGUSR1)) return -1;
+    if (sigprocmask(SIG_UNBLOCK, &blocked, &pending)) return -1;
+    if (signal_note != SIGUSR1 || sigismember(&pending, SIGUSR1))
+        return -1;
+
+    /* A user loop with no syscalls still reaches its handler through the
+       tick delivery: the child waits the parent into the loop first. */
+    signal_note = 0;
+    int child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        struct timespec pause;
+        pause.tv_sec = 0;
+        pause.tv_nsec = 100000000L;
+        nanosleep(&pause, 0);
+        kill(getppid(), SIGUSR1);
+        _exit(0);
+    }
+    volatile unsigned long spin = 0;
+    while (!signal_note) spin++;
+    if (signal_note != SIGUSR1) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status))
+        return -1;
+
+    /* An interrupted nanosleep answers EINTR with the time it still
+       owed, rounded to whole ticks. */
+    action.sa_handler = note_signal;
+    if (sigaction(SIGUSR2, &action, 0)) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        struct timespec pause;
+        pause.tv_sec = 0;
+        pause.tv_nsec = 100000000L;
+        nanosleep(&pause, 0);
+        kill(getppid(), SIGUSR2);
+        _exit(0);
+    }
+    struct timespec interval;
+    interval.tv_sec = 2;
+    interval.tv_nsec = 0;
+    struct timespec remaining;
+    errno = 0;
+    if (nanosleep(&interval, &remaining) != -1 || errno != EINTR)
+        return -1;
+    if (remaining.tv_sec < 1 || remaining.tv_sec > 1 ||
+        remaining.tv_nsec > 999999999L) return -1;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status))
+        return -1;
+
+    /* A hardware fault reaches its handler with the faulting frame: the
+       POSIX return repeats the instruction, so the handler leaves through
+       _exit rather than resuming into the same fault. */
+    action.sa_handler = exit_from_handler;
+    if (sigaction(SIGSEGV, &action, 0)) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        *(volatile unsigned long *)0 = 1;
+        _exit(1);
+    }
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 77)
+        return -1;
+    if (signal_note != SIGSEGV) return -1;
+
+    /* SIGKILL on a parked child surfaces as WIFSIGNALED with the real
+       termsig, not a folded exit byte. */
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        struct timespec long_sleep;
+        long_sleep.tv_sec = 5;
+        long_sleep.tv_nsec = 0;
+        nanosleep(&long_sleep, 0);
+        _exit(0);
+    }
+    struct timespec settle;
+    settle.tv_sec = 0;
+    settle.tv_nsec = 100000000L;
+    nanosleep(&settle, 0);
+    if (kill(child, SIGKILL)) return -1;
+    if (waitpid(child, &status, 0) != child || !WIFSIGNALED(status) ||
+        WTERMSIG(status) != SIGKILL)
+        return -1;
+
+    /* An ignored SIGCHLD is the auto-reap contract: the child leaves no
+       zombie and waitpid answers ECHILD. */
+    action.sa_handler = SIG_IGN;
+    if (sigaction(SIGCHLD, &action, 0)) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) _exit(50);
+    nanosleep(&settle, 0);
+    errno = 0;
+    if (waitpid(child, &status, 0) != -1 || errno != ECHILD) return -1;
+    action.sa_handler = SIG_DFL;
+    if (sigaction(SIGCHLD, &action, 0)) return -1;
+
+    /* Rejections: an unknown signal, an untouchable one, a non positive
+       pid, and a pid no task answers for. */
+    errno = 0;
+    if (sigaction(0, &action, 0) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (sigaction(32, &action, 0) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (sigaction(SIGKILL, &action, 0) != -1 || errno != EINVAL)
+        return -1;
+    errno = 0;
+    if (kill(-1, SIGTERM) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (kill(9999, SIGTERM) != -1 || errno != ESRCH) return -1;
+    errno = 0;
+    if (sigprocmask(99, &blocked, 0) != -1 || errno != EINVAL) return -1;
+    /* Signal zero is the existence probe and reports success quietly. */
+    if (raise(0)) return -1;
+    return 0;
+}
+
 static int process_demo(void) {
     static const char payload[] = "posixdemo-child-payload";
     char *const child_argv[] = { "/posixdemo", "child", 0 };
@@ -827,6 +987,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX libc realpath pass\n");
     if (time_demo()) return 96;
     mich_write("Mich x86_64: POSIX clocks pass\n");
+    if (signal_demo()) return 97;
+    mich_write("Mich x86_64: POSIX signals pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;

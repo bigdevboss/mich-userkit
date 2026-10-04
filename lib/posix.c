@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -563,5 +564,86 @@ int gettimeofday(struct timeval *out, void *timezone) {
     if (clock_gettime(CLOCK_REALTIME, &now)) return -1;
     out->tv_sec = now.tv_sec;
     out->tv_usec = now.tv_nsec / 1000;
+    return 0;
+}
+
+int kill(pid_t pid, int signo) {
+    long result = mich_syscall2(POSIX_SYSCALL_KILL, (unsigned long)pid,
+                                (unsigned long)(u32)signo);
+    return result_int((int)result);
+}
+
+int raise(int signo) {
+    return kill(getpid(), signo);
+}
+
+static int sigaction_call(struct posix_sigaction_request *request) {
+    return result_int(request_call(POSIX_SYSCALL_SIGACTION, request));
+}
+
+int sigaction(int signo, const struct sigaction *action,
+              struct sigaction *previous) {
+    struct posix_sigaction_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.signo = signo;
+    if (action) {
+        request.flags = POSIX_SA_APPLY;
+        request.handler = (uptr_t)action->sa_handler;
+        request.mask = action->sa_mask.bits;
+        if (action->sa_handler != SIG_DFL &&
+            action->sa_handler != SIG_IGN) {
+            /* The kernel has no trampoline of its own, so a caught
+               handler always rides with the libc restorer unless the
+               caller brought one. */
+            request.restorer = action->sa_restorer ?
+                (uptr_t)action->sa_restorer : (uptr_t)&mich_sigreturn;
+        }
+    }
+    if (sigaction_call(&request)) return -1;
+    if (previous) {
+        previous->sa_handler = (void (*)(int))request.previous_handler;
+        previous->sa_mask.bits = request.previous_mask;
+        previous->sa_flags = (int)request.previous_flags;
+        previous->sa_restorer = (void (*)(void))request.previous_restorer;
+    }
+    return 0;
+}
+
+void (*signal(int signo, void (*handler)(int)))(int) {
+    struct sigaction action;
+    struct sigaction previous;
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = handler;
+    action.sa_flags = 0;
+    action.sa_restorer = 0;
+    if (sigaction(signo, &action, &previous)) return SIG_ERR;
+    return previous.sa_handler;
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *previous) {
+    /* POSIX reads the previous mask even when the new one is missing,
+       which the request shape answers with a no-op setmask of zero. */
+    struct posix_sigprocmask_request request;
+    request.how = set ? (u32)how : POSIX_SIG_SETMASK;
+    request.reserved = 0;
+    request.mask = set ? set->bits : 0;
+    request.previous = 0;
+    if (result_int(request_call(POSIX_SYSCALL_SIGPROCMASK, &request)))
+        return -1;
+    if (previous) previous->bits = request.previous;
+    return 0;
+}
+
+int sigpending(sigset_t *set) {
+    if (!set) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_sigpending_request request;
+    request.pending = 0;
+    if (result_int(request_call(POSIX_SYSCALL_SIGPENDING, &request)))
+        return -1;
+    set->bits = request.pending;
     return 0;
 }

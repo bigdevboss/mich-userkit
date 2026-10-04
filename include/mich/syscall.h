@@ -47,6 +47,7 @@ int mich_wait(int pid);
 int mich_getpid(void);
 int mich_kill(int pid);
 int mich_yield(void);
+void mich_sigreturn(void);
 int mich_fork(void);
 int mich_exec(const char *path, unsigned long argument);
 int mich_spawn(unsigned long argument);
