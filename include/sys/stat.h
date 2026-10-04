@@ -2,6 +2,7 @@
 #define MICH64_SYS_STAT_H
 
 #include <sys/types.h>
+#include <time.h>
 
 #define S_IFMT 0170000u
 #define S_IFREG 0100000u
@@ -30,6 +31,8 @@ struct stat {
     unsigned long long st_atime;
     unsigned long long st_mtime;
     unsigned long long st_ctime;
+    unsigned int st_atime_nsec;
+    unsigned int st_mtime_nsec;
 };
 
 int stat(const char *path, struct stat *buffer);
@@ -40,6 +43,9 @@ int rmdir(const char *path);
 int unlink(const char *path);
 int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);
+int utimensat(int dirfd, const char *path, const struct timespec times[2],
+              int flags);
+int futimens(int fd, const struct timespec times[2]);
 mode_t umask(mode_t mask);
 
 #endif

@@ -191,6 +191,8 @@ static void copy_stat(struct stat *destination,
     destination->st_atime = source->st_atime;
     destination->st_mtime = source->st_mtime;
     destination->st_ctime = source->st_ctime;
+    destination->st_atime_nsec = source->st_atime_nsec;
+    destination->st_mtime_nsec = source->st_mtime_nsec;
 }
 
 int stat(const char *path, struct stat *buffer) {
@@ -264,6 +266,48 @@ int fchmod(int fd, mode_t mode) {
     request.descriptor = fd;
     request.mode = (u32)mode;
     return result_int(request_call(POSIX_SYSCALL_FCHMOD, &request));
+}
+
+int utimensat(int dirfd, const char *path, const struct timespec times[2],
+              int flags) {
+    if (dirfd != AT_FDCWD || flags) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_utimensat_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    int copied = copy_path(request.path, path);
+    if (copied) return result_int(copied);
+    // A NULL times pair is the classic utime request: stamp both halves
+    // with the clock. tv_sec rides along ignored when NOW or OMIT speaks.
+    if (times) {
+        request.atime_sec = times[0].tv_sec;
+        request.atime_nsec = times[0].tv_nsec;
+        request.mtime_sec = times[1].tv_sec;
+        request.mtime_nsec = times[1].tv_nsec;
+    } else {
+        request.atime_nsec = POSIX_UTIME_NOW;
+        request.mtime_nsec = POSIX_UTIME_NOW;
+    }
+    return result_int(request_call(POSIX_SYSCALL_UTIMENSAT, &request));
+}
+
+int futimens(int fd, const struct timespec times[2]) {
+    struct posix_futimens_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.descriptor = fd;
+    if (times) {
+        request.atime_sec = times[0].tv_sec;
+        request.atime_nsec = times[0].tv_nsec;
+        request.mtime_sec = times[1].tv_sec;
+        request.mtime_nsec = times[1].tv_nsec;
+    } else {
+        request.atime_nsec = POSIX_UTIME_NOW;
+        request.mtime_nsec = POSIX_UTIME_NOW;
+    }
+    return result_int(request_call(POSIX_SYSCALL_FUTIMENS, &request));
 }
 
 int chown(const char *path, uid_t owner, gid_t group) {

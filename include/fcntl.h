@@ -16,6 +16,11 @@
 #define F_SETFD 2
 #define FD_CLOEXEC 1
 
+/* The only dirfd the utimensat wrapper carries: paths resolve against the
+   working directory, so a concrete descriptor or an unsupported flag is
+   refused up front rather than half-followed. */
+#define AT_FDCWD (-100)
+
 int open(const char *path, int flags, ...);
 int fcntl(int fd, int command, ...);
 
