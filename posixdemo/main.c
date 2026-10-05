@@ -1045,6 +1045,123 @@ static int pledge_demo(void) {
     return 0;
 }
 
+static volatile sig_atomic_t pipe_note;
+
+static void note_pipe_signal(int signo) {
+    pipe_note = signo;
+}
+
+static int pipe_demo(void) {
+    static unsigned char block[4096];
+    static unsigned char mirror[4096];
+    for (unsigned int index = 0; index < sizeof(block); index++)
+        block[index] = (unsigned char)(index * 7u + 3u);
+    int descriptors[2];
+
+    /* A same process round trip, then a write that wraps the ring tail:
+       3600 bytes leave the tail there and the next 1024 span the end. */
+    if (pipe(descriptors)) return -1;
+    if (write(descriptors[1], block, 3600) != 3600) return -1;
+    if (read(descriptors[0], mirror, 3600) != 3600) return -1;
+    for (unsigned int index = 0; index < 3600u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (write(descriptors[1], block, 1024) != 1024) return -1;
+    if (read(descriptors[0], mirror, 1024) != 1024) return -1;
+    for (unsigned int index = 0; index < 1024u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (close(descriptors[0]) || close(descriptors[1])) return -1;
+
+    /* Across fork the descriptors share the ends, so the child's write
+       wakes the parent parked on the empty ring. */
+    if (pipe(descriptors)) return -1;
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        if (write(descriptors[1], block, 96) != 96) _exit(80);
+        _exit(0);
+    }
+    if (read(descriptors[0], mirror, 96) != 96) return -1;
+    for (unsigned int index = 0; index < 96u; index++)
+        if (mirror[index] != block[index]) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || status != 0) return -1;
+    /* End of file: the reaped child held the other write end, so the
+       parent's close is the last one and the drained ring answers 0. */
+    if (close(descriptors[1])) return -1;
+    if (read(descriptors[0], mirror, 96) != 0) return -1;
+    if (close(descriptors[0])) return -1;
+
+    /* A write with no read end left answers EPIPE and raises SIGPIPE;
+       catching it turns the death into a note. */
+    struct sigaction action;
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = note_pipe_signal;
+    action.sa_flags = 0;
+    action.sa_restorer = 0;
+    if (sigaction(SIGPIPE, &action, 0)) return -1;
+    if (pipe(descriptors)) return -1;
+    if (close(descriptors[0])) return -1;
+    pipe_note = 0;
+    errno = 0;
+    if (write(descriptors[1], block, 64) != -1 || errno != EPIPE)
+        return -1;
+    if (pipe_note != SIGPIPE) return -1;
+    if (close(descriptors[1])) return -1;
+
+    /* A signal breaks the parked read with EINTR; the resumed context
+       is the one the handler returns to. */
+    if (sigaction(SIGUSR1, &action, 0)) return -1;
+    if (pipe(descriptors)) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        sigemptyset(&action.sa_mask);
+        action.sa_handler = note_pipe_signal;
+        action.sa_flags = 0;
+        action.sa_restorer = 0;
+        if (sigaction(SIGUSR1, &action, 0)) _exit(81);
+        pipe_note = 0;
+        errno = 0;
+        if (read(descriptors[0], mirror, 128) != -1 || errno != EINTR)
+            _exit(82);
+        if (pipe_note != SIGUSR1) _exit(82);
+        _exit(65);
+    }
+    struct timespec settle;
+    settle.tv_sec = 0;
+    settle.tv_nsec = 100 * 1000 * 1000;
+    struct timespec left;
+    nanosleep(&settle, &left);
+    if (kill(child, SIGUSR1)) return -1;
+    if (waitpid(child, &status, 0) != child) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 65) return -1;
+    if (close(descriptors[0]) || close(descriptors[1])) return -1;
+
+    /* Nine 512 byte writes overflow the 4096 ring, so the child parks on
+       the last one and the parent's drain completes it. */
+    if (pipe(descriptors)) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        for (unsigned int round = 0; round < 9; round++)
+            if (write(descriptors[1], block, 512) != 512) _exit(83);
+        _exit(0);
+    }
+    nanosleep(&settle, &left);
+    unsigned int drained = 0;
+    while (drained < 9u * 512u) {
+        long got = read(descriptors[0], mirror, 512);
+        if (got <= 0) return -1;
+        for (unsigned int index = 0; index < (unsigned int)got; index++)
+            if (mirror[index] != block[(drained + index) % 512u])
+                return -1;
+        drained += (unsigned int)got;
+    }
+    if (waitpid(child, &status, 0) != child || status != 0) return -1;
+    if (close(descriptors[0]) || close(descriptors[1])) return -1;
+    return 0;
+}
+
 static int child_role(void) {
     static const char payload[] = "posixdemo-child-payload";
     char buffer[32];
@@ -1116,6 +1233,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX application process pass\n");
     if (pledge_demo()) return 98;
     mich_write("Mich x86_64: POSIX pledge and unveil pass\n");
+    if (pipe_demo()) return 99;
+    mich_write("Mich x86_64: POSIX pipes pass\n");
     return 0;
 }
 

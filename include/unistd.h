@@ -64,4 +64,12 @@ int pledge(const char *promises, const char *execpromises);
    unveil(2). */
 int unveil(const char *path, const char *permissions);
 
+/* Two descriptors over one kernel ring: descriptors[0] reads and
+   descriptors[1] writes. A read on an empty ring parks until a write or
+   the last write end closes (which answers 0), and a write onto a full
+   ring parks until a read drains room. Writes of at most 4096 bytes are
+   atomic; a write with no read end left answers EPIPE and raises
+   SIGPIPE. */
+int pipe(int descriptors[2]);
+
 #endif

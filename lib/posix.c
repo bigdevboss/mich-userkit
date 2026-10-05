@@ -57,6 +57,17 @@ int close(int fd) {
     return result_int(request_call(POSIX_SYSCALL_CLOSE, &request));
 }
 
+int pipe(int descriptors[2]) {
+    struct posix_pipe_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    long result = request_call(POSIX_SYSCALL_PIPE, &request);
+    if (result < 0) return result_int(result);
+    descriptors[0] = request.descriptors[0];
+    descriptors[1] = request.descriptors[1];
+    return 0;
+}
+
 static ssize_t io_call(u32 number, int fd, void *buffer, size_t length) {
     if (!buffer && length) {
         errno = EINVAL;
