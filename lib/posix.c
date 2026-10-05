@@ -6,6 +6,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/random.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <mich/syscall.h>
 #include <posix_abi.h>
 
@@ -715,4 +717,350 @@ int sigpending(sigset_t *set) {
         return -1;
     set->bits = request.pending;
     return 0;
+}
+
+// The socket calls stage their payload and addresses the way the io
+// pair does: one request the kernel copies in and answers with a copy
+// back carrying the moved bytes and the filled address. Flags carry no
+// v0 meaning, so a nonzero flag word answers EOPNOTSUPP before the
+// kernel is asked, and one datagram rides whole in a single request.
+
+static int check_socket_flags(int flags) {
+    if (!flags) return 0;
+    errno = EOPNOTSUPP;
+    return -1;
+}
+
+static int copy_address_in(struct posix_sockaddr_in *destination,
+                           const struct sockaddr *source,
+                           socklen_t length) {
+    if (!source || length < (socklen_t)sizeof(struct sockaddr_in)) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (u32 index = 0; index < sizeof(*destination); index++)
+        ((u8 *)destination)[index] = ((const u8 *)source)[index];
+    return 0;
+}
+
+static void zero_request(void *request, u32 size) {
+    for (u32 index = 0; index < size; index++) ((u8 *)request)[index] = 0;
+}
+
+int socket(int domain, int type, int protocol) {
+    struct posix_socket_request request;
+    zero_request(&request, sizeof(request));
+    request.domain = (u32)domain;
+    request.type = (u32)type;
+    request.protocol = (u32)protocol;
+    return result_int(request_call(POSIX_SYSCALL_SOCKET, &request));
+}
+
+int bind(int fd, const struct sockaddr *address, socklen_t length) {
+    struct posix_socket_address_request request;
+    zero_request(&request, sizeof(request));
+    if (copy_address_in(&request.address, address, length)) return -1;
+    request.descriptor = fd;
+    request.length = sizeof(request.address);
+    return result_int(request_call(POSIX_SYSCALL_BIND, &request));
+}
+
+int connect(int fd, const struct sockaddr *address, socklen_t length) {
+    struct posix_socket_address_request request;
+    zero_request(&request, sizeof(request));
+    if (copy_address_in(&request.address, address, length)) return -1;
+    request.descriptor = fd;
+    request.length = sizeof(request.address);
+    return result_int(request_call(POSIX_SYSCALL_CONNECT, &request));
+}
+
+int listen(int fd, int backlog) {
+    struct posix_socket_listen_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.backlog = (u32)backlog;
+    return result_int(request_call(POSIX_SYSCALL_LISTEN, &request));
+}
+
+// The v0 accept carries no peer address back; a caller that asks for
+// one learns nothing, because the accepted socket keeps no name either.
+int accept(int fd, struct sockaddr *address, socklen_t *length) {
+    (void)address;
+    (void)length;
+    struct posix_socket_accept_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    return result_int(request_call(POSIX_SYSCALL_ACCEPT, &request));
+}
+
+// A stream send chunks at the staging bound the way the file io pair
+// does; a parked chunk answers through the request copy the waker
+// wrote, so the transferred word is read back after every call.
+ssize_t send(int fd, const void *buffer, size_t length, int flags) {
+    if (check_socket_flags(flags)) return -1;
+    if (!buffer && length) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t done = 0;
+    while (done < length) {
+        u32 chunk = length - done > POSIX_IO_MAX ? POSIX_IO_MAX :
+            (u32)(length - done);
+        struct posix_socket_io_request request;
+        zero_request(&request, sizeof(request));
+        request.descriptor = fd;
+        request.length = chunk;
+        for (u32 index = 0; index < chunk; index++)
+            request.data[index] = ((const u8 *)buffer)[done + index];
+        long result = request_call(POSIX_SYSCALL_SEND, &request);
+        if (result < 0) {
+            if (done) return (ssize_t)done;
+            return result_int(result);
+        }
+        done += request.transferred;
+        if (request.transferred < chunk) break;
+    }
+    return (ssize_t)done;
+}
+
+ssize_t recv(int fd, void *buffer, size_t length, int flags) {
+    if (check_socket_flags(flags)) return -1;
+    if (!buffer && length) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (length > POSIX_IO_MAX) length = POSIX_IO_MAX;
+    struct posix_socket_io_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.length = (u32)length;
+    long result = request_call(POSIX_SYSCALL_RECV, &request);
+    if (result < 0) return result_int(result);
+    for (u32 index = 0; index < request.transferred; index++)
+        ((u8 *)buffer)[index] = request.data[index];
+    return (ssize_t)request.transferred;
+}
+
+// One datagram rides whole: the staging bound is the datagram bound, so
+// a larger ask is EMSGSIZE rather than a cut.
+ssize_t sendto(int fd, const void *buffer, size_t length, int flags,
+               const struct sockaddr *destination, socklen_t destlen) {
+    if (check_socket_flags(flags)) return -1;
+    if (!buffer && length) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (length > POSIX_IO_MAX) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    struct posix_socket_io_request request;
+    zero_request(&request, sizeof(request));
+    if (destination &&
+        copy_address_in(&request.address, destination, destlen))
+        return -1;
+    request.descriptor = fd;
+    request.address_length = destination ? sizeof(request.address) : 0;
+    request.length = (u32)length;
+    for (u32 index = 0; index < length; index++)
+        request.data[index] = ((const u8 *)buffer)[index];
+    long result = request_call(POSIX_SYSCALL_SENDTO, &request);
+    if (result < 0) return result_int(result);
+    return (ssize_t)request.transferred;
+}
+
+ssize_t recvfrom(int fd, void *buffer, size_t length, int flags,
+                 struct sockaddr *source, socklen_t *sourcelen) {
+    if (check_socket_flags(flags)) return -1;
+    if (!buffer && length) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (length > POSIX_IO_MAX) length = POSIX_IO_MAX;
+    struct posix_socket_io_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.address_length = sizeof(request.address);
+    request.length = (u32)length;
+    long result = request_call(POSIX_SYSCALL_RECVFROM, &request);
+    if (result < 0) return result_int(result);
+    for (u32 index = 0; index < request.transferred; index++)
+        ((u8 *)buffer)[index] = request.data[index];
+    if (source && sourcelen) {
+        for (u32 index = 0; index < sizeof(request.address) &&
+             index < *sourcelen; index++)
+            ((u8 *)source)[index] = ((u8 *)&request.address)[index];
+        *sourcelen = request.address_length ?
+            (socklen_t)sizeof(struct sockaddr_in) : 0;
+    }
+    return (ssize_t)request.transferred;
+}
+
+// The message calls translate the POSIX header into the kernel one:
+// the vectors stay caller memory the kernel chases per segment, while
+// the name travels inline. Control data has no v0 meaning.
+static int copy_message_in(struct posix_msghdr *request,
+                           const struct msghdr *message) {
+    if (!message->msg_iov || message->msg_iovlen < 1 ||
+        message->msg_iovlen > (int)POSIX_MSG_IOV_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (message->msg_control && message->msg_controllen) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+    request->iov_count = (u32)message->msg_iovlen;
+    for (u32 index = 0; index < request->iov_count; index++) {
+        if (!message->msg_iov[index].iov_base &&
+            message->msg_iov[index].iov_len) {
+            errno = EINVAL;
+            return -1;
+        }
+        request->iov[index].base = (uptr_t)message->msg_iov[index].iov_base;
+        request->iov[index].length = (u32)message->msg_iov[index].iov_len;
+        request->iov[index].reserved = 0;
+    }
+    if (message->msg_name) {
+        if (copy_address_in(&request->address,
+                            (const struct sockaddr *)message->msg_name,
+                            message->msg_namelen))
+            return -1;
+        request->address_length = sizeof(request->address);
+    }
+    return 0;
+}
+
+ssize_t sendmsg(int fd, const struct msghdr *message, int flags) {
+    if (check_socket_flags(flags)) return -1;
+    if (!message) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_msghdr request;
+    zero_request(&request, sizeof(request));
+    if (copy_message_in(&request, message)) return -1;
+    request.descriptor = fd;
+    return result_int(request_call(POSIX_SYSCALL_SENDMSG, &request));
+}
+
+ssize_t recvmsg(int fd, struct msghdr *message, int flags) {
+    if (check_socket_flags(flags)) return -1;
+    if (!message) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_msghdr request;
+    zero_request(&request, sizeof(request));
+    if (copy_message_in(&request, message)) return -1;
+    request.descriptor = fd;
+    long result = request_call(POSIX_SYSCALL_RECVMSG, &request);
+    if (result < 0) return result_int(result);
+    // The kernel scattered the payload straight into the caller's
+    // vectors; the name and the flags ride back in the request copy.
+    if (message->msg_name && message->msg_namelen) {
+        for (u32 index = 0; index < sizeof(request.address) &&
+             index < message->msg_namelen; index++)
+            ((u8 *)message->msg_name)[index] =
+                ((u8 *)&request.address)[index];
+        message->msg_namelen = request.address_length ?
+            (socklen_t)sizeof(struct sockaddr_in) : 0;
+    }
+    message->msg_flags = (int)request.flags;
+    return (ssize_t)result;
+}
+
+int shutdown(int fd, int how) {
+    struct posix_socket_shutdown_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.how = (u32)how;
+    return result_int(request_call(POSIX_SYSCALL_SHUTDOWN, &request));
+}
+
+int getsockopt(int fd, int level, int name, void *value, socklen_t *length) {
+    if (!length) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_sockopt_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.level = (u32)level;
+    request.name = (u32)name;
+    if (*length > (socklen_t)sizeof(request.value)) {
+        errno = EINVAL;
+        return -1;
+    }
+    request.length = *length;
+    long result = request_call(POSIX_SYSCALL_GETSOCKOPT, &request);
+    if (result < 0) return result_int(result);
+    if (value)
+        for (u32 index = 0; index < request.length; index++)
+            ((u8 *)value)[index] = request.value[index];
+    *length = (socklen_t)request.length;
+    return 0;
+}
+
+int setsockopt(int fd, int level, int name, const void *value,
+               socklen_t length) {
+    struct posix_sockopt_request request;
+    if (!value || !length || length > (socklen_t)sizeof(request.value)) {
+        errno = EINVAL;
+        return -1;
+    }
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.level = (u32)level;
+    request.name = (u32)name;
+    request.length = (u32)length;
+    for (u32 index = 0; index < length; index++)
+        request.value[index] = ((const u8 *)value)[index];
+    return result_int(request_call(POSIX_SYSCALL_SETSOCKOPT, &request));
+}
+
+static int name_call(u32 number, int fd, struct sockaddr *address,
+                     socklen_t *length) {
+    if (!address || !length ||
+        *length < (socklen_t)sizeof(struct sockaddr_in)) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_socket_address_request request;
+    zero_request(&request, sizeof(request));
+    request.descriptor = fd;
+    request.length = sizeof(request.address);
+    long result = request_call(number, &request);
+    if (result < 0) return result_int(result);
+    for (u32 index = 0; index < sizeof(request.address); index++)
+        ((u8 *)address)[index] = ((u8 *)&request.address)[index];
+    *length = (socklen_t)request.length;
+    return 0;
+}
+
+int getsockname(int fd, struct sockaddr *address, socklen_t *length) {
+    return name_call(POSIX_SYSCALL_GETSOCKNAME, fd, address, length);
+}
+
+int getpeername(int fd, struct sockaddr *address, socklen_t *length) {
+    return name_call(POSIX_SYSCALL_GETPEERNAME, fd, address, length);
+}
+
+// The byte order pair: the machine is little endian, so the network
+// order the wire and the kernel addresses carry is the swap of these.
+in_port_t htons(in_port_t value) {
+    return (in_port_t)(((value & 0xFFu) << 8) | ((value >> 8) & 0xFFu));
+}
+
+in_port_t ntohs(in_port_t value) {
+    return htons(value);
+}
+
+in_addr_t htonl(in_addr_t value) {
+    return ((value & 0xFFu) << 24) | ((value & 0xFF00u) << 8) |
+        ((value >> 8) & 0xFF00u) | ((value >> 24) & 0xFFu);
+}
+
+in_addr_t ntohl(in_addr_t value) {
+    return htonl(value);
 }

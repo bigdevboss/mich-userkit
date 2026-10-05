@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -901,6 +903,177 @@ static int signal_demo(void) {
     return 0;
 }
 
+static volatile sig_atomic_t socket_note;
+
+static void note_socket_signal(int signo) {
+    socket_note = signo;
+}
+
+static void fill_loopback_address(struct sockaddr_in *address,
+                                  unsigned short port) {
+    for (unsigned int index = 0; index < sizeof(*address); index++)
+        ((unsigned char *)address)[index] = 0;
+    address->sin_family = AF_INET;
+    address->sin_port = htons(port);
+    address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+}
+
+static int socket_demo(void) {
+    static unsigned char block[512];
+    static unsigned char mirror[512];
+    for (unsigned int index = 0; index < sizeof(block); index++)
+        block[index] = (unsigned char)(index * 11u + 5u);
+
+    // A same process round trip over loopback: both ends bind, the
+    // sender's datagram lands in the receiver's queue, and the source
+    // address names the sender.
+    int receiver = socket(AF_INET, SOCK_DGRAM, 0);
+    int sender = socket(AF_INET, SOCK_DGRAM, 0);
+    if (receiver < 0 || sender < 0) return -1;
+    struct sockaddr_in receiver_address;
+    struct sockaddr_in sender_address;
+    fill_loopback_address(&receiver_address, 31050);
+    fill_loopback_address(&sender_address, 31051);
+    if (bind(receiver, (struct sockaddr *)&receiver_address,
+             sizeof(receiver_address))) return -1;
+    if (bind(sender, (struct sockaddr *)&sender_address,
+             sizeof(sender_address))) return -1;
+
+    struct sockaddr_in named;
+    socklen_t named_length = sizeof(named);
+    if (getsockname(receiver, (struct sockaddr *)&named, &named_length))
+        return -1;
+    if (named_length != sizeof(named) || named.sin_family != AF_INET ||
+        ntohs(named.sin_port) != 31050 ||
+        ntohl(named.sin_addr.s_addr) != INADDR_LOOPBACK) return -1;
+
+    // The option rows the profile answers: the type and the domain read
+    // back, and port reuse is stack policy that accepts the setting.
+    int option_value = 0;
+    socklen_t option_length = sizeof(option_value);
+    if (getsockopt(receiver, SOL_SOCKET, SO_TYPE, &option_value,
+                   &option_length)) return -1;
+    if (option_value != (int)SOCK_DGRAM ||
+        option_length != sizeof(option_value)) return -1;
+    option_length = sizeof(option_value);
+    if (getsockopt(receiver, SOL_SOCKET, SO_DOMAIN, &option_value,
+                   &option_length)) return -1;
+    if (option_value != (int)AF_INET) return -1;
+    if (setsockopt(receiver, SOL_SOCKET, SO_REUSEADDR, &option_value,
+                   sizeof(option_value))) return -1;
+
+    struct sockaddr_in source;
+    socklen_t source_length = sizeof(source);
+    if (sendto(sender, block, 96, 0, (struct sockaddr *)&receiver_address,
+               sizeof(receiver_address)) != 96) return -1;
+    if (recvfrom(receiver, mirror, sizeof(mirror), 0,
+                 (struct sockaddr *)&source, &source_length) != 96)
+        return -1;
+    for (unsigned int index = 0; index < 96u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (source_length != sizeof(source) || source.sin_family != AF_INET ||
+        ntohs(source.sin_port) != 31051 ||
+        ntohl(source.sin_addr.s_addr) != INADDR_LOOPBACK) return -1;
+
+    // The message calls scatter and gather the same trip: two vectors
+    // out, two vectors back, the name riding the header.
+    struct iovec out_vectors[2];
+    out_vectors[0].iov_base = block;
+    out_vectors[0].iov_len = 40;
+    out_vectors[1].iov_base = block + 40;
+    out_vectors[1].iov_len = 56;
+    struct msghdr out_message;
+    for (unsigned int index = 0; index < sizeof(out_message); index++)
+        ((unsigned char *)&out_message)[index] = 0;
+    out_message.msg_name = &receiver_address;
+    out_message.msg_namelen = sizeof(receiver_address);
+    out_message.msg_iov = out_vectors;
+    out_message.msg_iovlen = 2;
+    if (sendmsg(sender, &out_message, 0) != 96) return -1;
+    struct iovec in_vectors[2];
+    in_vectors[0].iov_base = mirror;
+    in_vectors[0].iov_len = 48;
+    in_vectors[1].iov_base = mirror + 48;
+    in_vectors[1].iov_len = 48;
+    struct msghdr in_message;
+    for (unsigned int index = 0; index < sizeof(in_message); index++)
+        ((unsigned char *)&in_message)[index] = 0;
+    in_message.msg_name = &source;
+    in_message.msg_namelen = sizeof(source);
+    in_message.msg_iov = in_vectors;
+    in_message.msg_iovlen = 2;
+    if (recvmsg(receiver, &in_message, 0) != 96) return -1;
+    for (unsigned int index = 0; index < 96u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (in_message.msg_namelen != sizeof(source) ||
+        ntohs(source.sin_port) != 31051) return -1;
+
+    // A datagram socket carries no peer name to answer.
+    errno = 0;
+    if (getpeername(receiver, (struct sockaddr *)&source, &source_length) !=
+            -1 || errno != ENOTCONN) return -1;
+    if (close(sender)) return -1;
+
+    // Across fork the child binds its own end while the parent parks on
+    // the empty queue; the child's sendto is the wake.
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        struct sockaddr_in fresh_address;
+        fill_loopback_address(&fresh_address, 31052);
+        int fresh = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fresh < 0 || bind(fresh, (struct sockaddr *)&fresh_address,
+                              sizeof(fresh_address))) _exit(68);
+        if (sendto(fresh, block, 128, 0,
+                   (struct sockaddr *)&receiver_address,
+                   sizeof(receiver_address)) != 128) _exit(68);
+        _exit(0);
+    }
+    if (recvfrom(receiver, mirror, sizeof(mirror), 0,
+                 (struct sockaddr *)&source, &source_length) != 128)
+        return -1;
+    for (unsigned int index = 0; index < 128u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (source_length != sizeof(source) ||
+        ntohs(source.sin_port) != 31052) return -1;
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || status != 0) return -1;
+
+    // A signal breaks the parked receive with EINTR; the handler note
+    // proves the resumed context ran it first.
+    struct sigaction action;
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = note_socket_signal;
+    action.sa_flags = 0;
+    action.sa_restorer = 0;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        sigemptyset(&action.sa_mask);
+        action.sa_handler = note_socket_signal;
+        action.sa_flags = 0;
+        action.sa_restorer = 0;
+        if (sigaction(SIGUSR1, &action, 0)) _exit(68);
+        socket_note = 0;
+        errno = 0;
+        if (recvfrom(receiver, mirror, sizeof(mirror), 0,
+                     (struct sockaddr *)&source, &source_length) != -1 ||
+            errno != EINTR) _exit(68);
+        if (socket_note != SIGUSR1) _exit(68);
+        _exit(67);
+    }
+    struct timespec settle;
+    settle.tv_sec = 0;
+    settle.tv_nsec = 100 * 1000 * 1000;
+    struct timespec left;
+    nanosleep(&settle, &left);
+    if (kill(child, SIGUSR1)) return -1;
+    if (waitpid(child, &status, 0) != child) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 67) return -1;
+    if (close(receiver)) return -1;
+    return 0;
+}
+
 static int process_demo(void) {
     static const char payload[] = "posixdemo-child-payload";
     char *const child_argv[] = { "/posixdemo", "child", 0 };
@@ -1229,6 +1402,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX clocks pass\n");
     if (signal_demo()) return 97;
     mich_write("Mich x86_64: POSIX signals pass\n");
+    if (socket_demo()) return 66;
+    mich_write("Mich x86_64: POSIX sockets pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     if (pledge_demo()) return 98;
