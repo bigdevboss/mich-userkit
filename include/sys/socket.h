@@ -1,6 +1,7 @@
 #ifndef MICH64_SYS_SOCKET_H
 #define MICH64_SYS_SOCKET_H
 
+#include <stddef.h>
 #include <sys/types.h>
 
 // The v0 socket surface over the kernel net stack: AF_INET datagram and
