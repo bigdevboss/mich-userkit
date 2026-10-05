@@ -49,4 +49,19 @@ pid_t getppid(void);
    change. */
 unsigned int sleep(unsigned int seconds);
 
+/* Narrow the syscall surface. The first call fixes the ceiling, later
+   calls may only remove promises, and a call outside the set dies with
+   SIGABRT unless the "error" promise turned denials into ENOSYS. Either
+   string may be NULL to leave that half unchanged; an empty string is a
+   real empty set. execpromises replaces the set after the next execve.
+   Mirrors OpenBSD pledge(2) over this profile's canon-9 vocabulary. */
+int pledge(const char *promises, const char *execpromises);
+
+/* Drop a veil over the namespace: after the first call only the unveiled
+   paths stay visible. Permissions are the letters "rwx c" in one string.
+   unveil(NULL, NULL) locks the table forever, and a pledge without the
+   "unveil" promise closes the window the same way. Mirrors OpenBSD
+   unveil(2). */
+int unveil(const char *path, const char *permissions);
+
 #endif

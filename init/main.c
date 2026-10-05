@@ -529,7 +529,16 @@ int main(u64 role, u64 module_flags) {
     if (nb_receiver <= 0) stop();
     mich_yield();
     ipc_message.type = 77;
-    if (mich_send_nb((unsigned int)nb_receiver, &ipc_message) != 0) stop();
+    /* A nonblocking send answers "not ready" with -1 until the receiver
+       has parked in recv: one yield is not a barrier (a preemption tick
+       between the child's getpid and its recv loses the race), so retry
+       with a bounded guard the way a real EAGAIN caller must. */
+    int nb_result = mich_send_nb((unsigned int)nb_receiver, &ipc_message);
+    for (int guard = 0; nb_result == -1 && guard < 64; guard++) {
+        mich_yield();
+        nb_result = mich_send_nb((unsigned int)nb_receiver, &ipc_message);
+    }
+    if (nb_result != 0) stop();
     if (mich_wait(nb_receiver) != 77) stop();
     int dying = mich_spawn(8);
     if (dying <= 0 || mich_recv_from((unsigned int)dying, &ipc_message) != 0)

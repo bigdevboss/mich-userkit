@@ -776,8 +776,11 @@ static int signal_demo(void) {
     if (signal_note) return -1;
     if (sigpending(&pending) || !sigismember(&pending, SIGUSR1)) return -1;
     if (sigprocmask(SIG_UNBLOCK, &blocked, &pending)) return -1;
-    if (signal_note != SIGUSR1 || sigismember(&pending, SIGUSR1))
-        return -1;
+    /* The delivery rides the unblock exit, and the answer carries the
+       mask as it was before: USR1 was part of it, so membership here is
+       the expected picture, not a leftover pending bit. */
+    if (signal_note != SIGUSR1) return -1;
+    if (!sigismember(&pending, SIGUSR1)) return -1;
 
     /* A user loop with no syscalls still reaches its handler through the
        tick delivery: the child waits the parent into the loop first. */
@@ -841,7 +844,9 @@ static int signal_demo(void) {
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
         WEXITSTATUS(status) != 77)
         return -1;
-    if (signal_note != SIGSEGV) return -1;
+    /* The handler ran in the child's own address space after the fork, so
+       the parent cannot observe its signal_note write: the 77 exit byte is
+       the proof, only exit_from_handler produces it. */
 
     /* SIGKILL on a parked child surfaces as WIFSIGNALED with the real
        termsig, not a folded exit byte. */
@@ -928,6 +933,118 @@ static int process_demo(void) {
     return 0;
 }
 
+static volatile sig_atomic_t pledge_note;
+
+static void note_pledge_abrt(int signo) {
+    pledge_note = signo;
+}
+
+/* The child of the pledge demo runs after execve inside the exec
+   promises: "stdio" and nothing else, under the veil the parent left.
+   Its one act is a fork, which the narrowed set forbids: the denial is
+   loud, the default SIGABRT disposition takes the child down, and the
+   parent reads the termsig through waitpid. If the exec promises had
+   not applied, the inherited set still carried "proc" and the fork
+   would have succeeded. */
+static int sandbox_role(void) {
+    struct stat st;
+    if (stat("/boot/posixdemo", &st)) return 70;
+    errno = 0;
+    if (stat("/pledge-out.txt", &st) != -1 || errno != ENOENT) return 71;
+    pid_t pid = fork();
+    /* Reaching either return means the gate let the fork through. */
+    if (pid >= 0) return 72;
+    (void)pid;
+    return 73;
+}
+
+static int pledge_demo(void) {
+    struct stat st;
+
+    /* Fixtures exist before the veil: a sandbox tree and a file that
+       must disappear once the veil drops. */
+    if (mkdir("/pledge-sandbox", 0777) && errno != EEXIST) return -1;
+    int fd = open("/pledge-sandbox/box.txt", O_WRONLY | O_CREAT | O_TRUNC,
+                  0666);
+    if (fd < 0) return -1;
+    if (write(fd, "sandbox", 8) != 8) { close(fd); return -1; }
+    close(fd);
+    fd = open("/pledge-out.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) return -1;
+    close(fd);
+
+    /* The veil: the sandbox opens for reading, writing, and creation,
+       /boot for reading and executing, then the table locks. */
+    if (unveil("/pledge-sandbox", "rwc")) return -1;
+    if (unveil("/boot", "rx")) return -1;
+    if (unveil(0, 0)) return -1;
+    errno = 0;
+    if (unveil("/pledge-sandbox", "r") != -1 || errno != EPERM) return -1;
+
+    /* Promises with the error promise first: denials stay quiet. */
+    if (pledge("stdio rpath wpath cpath exec proc error", 0)) return -1;
+    if (pledge("stdio rpath cpath exec proc error", 0)) return -1;
+    errno = 0;
+    if (pledge("stdio rpath wpath", 0) != -1 || errno != EPERM) return -1;
+
+    /* The veil answers before anything else: an existing file outside
+       every rule is ENOENT, a rule without the permission asked for is
+       EACCES. */
+    errno = 0;
+    if (stat("/pledge-out.txt", &st) != -1 || errno != ENOENT) return -1;
+    if (stat("/pledge-sandbox/box.txt", &st)) return -1;
+    errno = 0;
+    if (execve("/pledge-sandbox/box.txt", 0, 0) != -1 || errno != EACCES)
+        return -1;
+
+    /* The error promise turns a promise denial into a quiet ENOSYS. */
+    errno = 0;
+    if (chmod("/boot/posixdemo", 0644) != -1 || errno != ENOSYS) return -1;
+
+    /* Inode-sticky directories: the rule remembers the directory it was
+       written on, so a removed and re-created directory of the same
+       name falls out of the veil even though "cpath" allows the very
+       operations that swap it. */
+    if (unlink("/pledge-sandbox/box.txt")) return -1;
+    if (rmdir("/pledge-sandbox")) return -1;
+    errno = 0;
+    if (mkdir("/pledge-sandbox", 0777) != -1 || errno != ENOENT) return -1;
+    errno = 0;
+    if (stat("/pledge-sandbox", &st) != -1 || errno != ENOENT) return -1;
+
+    /* Narrowing the error promise away makes the next denial loud: a
+       caught SIGABRT rides the delivery path block D built. */
+    if (pledge("stdio rpath cpath exec proc", 0)) return -1;
+    struct sigaction action;
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = note_pledge_abrt;
+    action.sa_flags = 0;
+    action.sa_restorer = 0;
+    if (sigaction(SIGABRT, &action, 0)) return -1;
+    pledge_note = 0;
+    errno = 0;
+    if (chmod("/boot/posixdemo", 0644) != -1 || errno != ENOSYS) return -1;
+    if (pledge_note != SIGABRT) return -1;
+
+    /* Exec promises: the child inherits the sandbox and the pending
+       replacement set, and after its execve runs under "stdio" alone.
+       The forbidden fork kills it with the SIGABRT termsig the parent
+       reads through waitpid. */
+    if (pledge(0, "stdio")) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        char *const sandbox_argv[] = { "posixdemo", "sandbox", 0 };
+        char *const sandbox_envp[] = { "POSIXDEMO=sandbox", 0 };
+        execve("/boot/posixdemo", sandbox_argv, sandbox_envp);
+        _exit(79);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) return -1;
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) return -1;
+    return 0;
+}
+
 static int child_role(void) {
     static const char payload[] = "posixdemo-child-payload";
     char buffer[32];
@@ -946,6 +1063,12 @@ static int child_role(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && string_equals(argv[1], "sandbox")) {
+        if (!environ || !string_equals(environ[0], "POSIXDEMO=sandbox") ||
+            environ[1])
+            return 78;
+        return sandbox_role();
+    }
     if (argc == 2 && string_equals(argv[1], "child")) {
         if (!environ || !string_equals(environ[0], "POSIXDEMO=child") ||
             environ[1])
@@ -991,5 +1114,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX signals pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
+    if (pledge_demo()) return 98;
+    mich_write("Mich x86_64: POSIX pledge and unveil pass\n");
     return 0;
 }
+

@@ -528,14 +528,15 @@ int nanosleep(const struct timespec *requested, struct timespec *remaining) {
     struct posix_nanosleep_request request = {
         requested->tv_sec, requested->tv_nsec, 0, 0
     };
-    if (result_int(request_call(POSIX_SYSCALL_NANOSLEEP, &request))) return -1;
-    /* Nothing interrupts the park yet, so the kernel always reports a zero
-       remainder; the copy keeps the shape signals will need. */
+    int failed = result_int(request_call(POSIX_SYSCALL_NANOSLEEP, &request));
+    /* The park is interruptible now (a signal breaks it with EINTR), and
+       POSIX requires the remainder report exactly then: copy it through
+       on the failure path too, not only on the sleep-out success path. */
     if (remaining) {
         remaining->tv_sec = (time_t)request.remaining_sec;
         remaining->tv_nsec = (long)request.remaining_nsec;
     }
-    return 0;
+    return failed ? -1 : 0;
 }
 
 time_t time(time_t *out) {
@@ -579,6 +580,63 @@ int raise(int signo) {
 
 static int sigaction_call(struct posix_sigaction_request *request) {
     return result_int(request_call(POSIX_SYSCALL_SIGACTION, request));
+}
+
+static int copy_promise(char destination[POSIX_PLEDGE_PROMISE_MAX],
+                       const char *source) {
+    u32 length = 0;
+    while (length + 1 < POSIX_PLEDGE_PROMISE_MAX && source[length]) {
+        destination[length] = source[length];
+        length++;
+    }
+    if (source[length]) return -EINVAL;
+    for (u32 index = length; index < POSIX_PLEDGE_PROMISE_MAX; index++)
+        destination[index] = 0;
+    return 0;
+}
+
+int pledge(const char *promises, const char *execpromises) {
+    struct posix_pledge_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    /* A NULL half means "leave it alone" and an empty string a real
+       empty set; the flags carry that distinction across the copy. */
+    if (promises) {
+        int copied = copy_promise(request.promises, promises);
+        if (copied) return result_int(copied);
+        request.flags |= POSIX_PLEDGE_HAS_PROMISES;
+    }
+    if (execpromises) {
+        int copied = copy_promise(request.execpromises, execpromises);
+        if (copied) return result_int(copied);
+        request.flags |= POSIX_PLEDGE_HAS_EXEC_PROMISES;
+    }
+    return result_int(request_call(POSIX_SYSCALL_PLEDGE, &request));
+}
+
+int unveil(const char *path, const char *permissions) {
+    struct posix_unveil_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    if (!path && !permissions) {
+        request.flags = POSIX_UNVEIL_LOCK;
+    } else if (!path || !permissions) {
+        errno = EINVAL;
+        return -1;
+    } else {
+        int copied = copy_path(request.path, path);
+        if (copied) return result_int(copied);
+        u32 length = 0;
+        while (length + 1 < 8 && permissions[length]) {
+            request.permissions[length] = permissions[length];
+            length++;
+        }
+        if (permissions[length]) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    return result_int(request_call(POSIX_SYSCALL_UNVEIL, &request));
 }
 
 int sigaction(int signo, const struct sigaction *action,
