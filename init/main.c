@@ -98,7 +98,7 @@ static int posix_user_process_test(void) {
     int status = -1;
 
     if (mkdir(directory, 0700)) return -1;
-    /* Fixture contract: 0 sync flag, 1 payload, 2 CLOEXEC victim. */
+    // Fixture contract: 0 sync flag, 1 payload, 2 CLOEXEC victim.
     int sync_fd = open("/posix-proc/sync", O_RDWR | O_CREAT, 0600);
     int data_fd = open("/posix-proc/data", O_RDWR | O_CREAT, 0600);
     int gone_fd = open("/posix-proc/gone", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
@@ -132,7 +132,7 @@ static int posix_user_process_test(void) {
     if (execve("/boot/posixapp", bad_argv, empty_env) != -1 ||
         errno != EINVAL)
         return -1;
-    /* Every failed execve above must leave descriptors and image intact. */
+    // Every failed execve above must leave descriptors and image intact.
     if (lseek(data_fd, 0, 0) != 0 ||
         read(data_fd, buffer, sizeof(payload) - 1) !=
         (ssize_t)(sizeof(payload) - 1))
@@ -146,8 +146,8 @@ static int posix_user_process_test(void) {
         execve("/boot/posixapp", args_fixture, env_fixture);
         _exit(9);
     }
-    /* The child parks on the sync flag, so it cannot exit before this
-       WNOHANG poll observes it alive. */
+    // The child parks on the sync flag, so it cannot exit before this
+    // WNOHANG poll observes it alive.
     if (waitpid(child, &status, WNOHANG) != 0) return -1;
     if (lseek(sync_fd, 0, 0) != 0 || write(sync_fd, "g", 1) != 1) return -1;
     if (waitpid(child, &status, 0) != child) return -1;
@@ -166,7 +166,6 @@ static int posix_user_process_test(void) {
 }
 
 
-/* TEMPORARY OQ-1 REPRO - not part of any commit. */
 __attribute__((noinline)) static void stress_putdec(u32 value) {
     char digits[12];
     u32 count = 0;
@@ -224,8 +223,8 @@ static int posix_application_test(void) {
         execve("/boot/posixdemo", demo_argv, demo_envp);
         _exit(9);
     }
-    /* The application runs to completion without a sync contract, so a
-       blocking wait is the honest rendezvous here. */
+    // The application runs to completion without a sync contract, so a
+    // blocking wait is the honest rendezvous here.
     if (waitpid(child, &status, 0) != child) return -1;
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
     return 0;
@@ -529,10 +528,10 @@ int main(u64 role, u64 module_flags) {
     if (nb_receiver <= 0) stop();
     mich_yield();
     ipc_message.type = 77;
-    /* A nonblocking send answers "not ready" with -1 until the receiver
-       has parked in recv: one yield is not a barrier (a preemption tick
-       between the child's getpid and its recv loses the race), so retry
-       with a bounded guard the way a real EAGAIN caller must. */
+    // A nonblocking send answers "not ready" with -1 until the receiver
+    // has parked in recv: one yield is not a barrier (a preemption tick
+    // between the child's getpid and its recv loses the race), so retry
+    // with a bounded guard the way a real EAGAIN caller must.
     int nb_result = mich_send_nb((unsigned int)nb_receiver, &ipc_message);
     for (int guard = 0; nb_result == -1 && guard < 64; guard++) {
         mich_yield();

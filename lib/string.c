@@ -10,8 +10,8 @@ void *memcpy(void *destination, const void *source, size_t length) {
 void *memmove(void *destination, const void *source, size_t length) {
     unsigned char *out = (unsigned char *)destination;
     const unsigned char *in = (const unsigned char *)source;
-    /* Copy forward unless the ranges overlap backwards, where a forward
-       copy would clobber the not yet read source bytes. */
+    // Copy forward unless the ranges overlap backwards, where a forward
+    // copy would clobber the not yet read source bytes.
     if (out < in || out >= in + length) {
         for (size_t index = 0; index < length; index++) out[index] = in[index];
     } else {

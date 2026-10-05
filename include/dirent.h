@@ -4,9 +4,9 @@
 #define DT_REG 1u
 #define DT_DIR 2u
 
-/* A getdents record as the kernel packs it: d_ino, d_off, d_reclen, d_type,
-   then the NUL-terminated name padded to an 8-byte boundary. Walk a result
-   buffer by advancing d_reclen. */
+// A getdents record as the kernel packs it: d_ino, d_off, d_reclen, d_type,
+// then the NUL-terminated name padded to an 8-byte boundary. Walk a result
+// buffer by advancing d_reclen.
 struct dirent {
     unsigned long long d_ino;
     unsigned long long d_off;

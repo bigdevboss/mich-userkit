@@ -3,8 +3,8 @@
 
 extern int errno;
 
-/* Reserved v0 errno surface of the POSIX application profile (4.7) plus
-   ECHILD, which waitpid needs and which keeps its canonical value. */
+// Reserved v0 errno surface of the POSIX application profile (4.7) plus
+// ECHILD, which waitpid needs and which keeps its canonical value.
 #define EPERM 1
 #define ENOENT 2
 #define ESRCH 3

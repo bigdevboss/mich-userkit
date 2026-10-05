@@ -3,9 +3,9 @@
 #include <errno.h>
 #include <mich/syscall.h>
 
-/* Step-5 process fixture: init64 forks, execve's this image with a fixed
-   contract - fd 0 sync flag, fd 1 payload, fd 2 dropped by CLOEXEC, cwd
-   /posix-proc - and reaps exit code 7 through waitpid. */
+// Step-5 process fixture: init64 forks, execve's this image with a fixed
+// contract - fd 0 sync flag, fd 1 payload, fd 2 dropped by CLOEXEC, cwd
+// /posix-proc - and reaps exit code 7 through waitpid.
 
 static int string_equals(const char *left, const char *right) {
     while (*left && *left == *right) {

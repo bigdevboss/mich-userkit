@@ -3,8 +3,8 @@
 
 #include <stddef.h>
 
-/* The userland build is freestanding, so the va_* facility comes from
-   compiler builtins instead of a hosted <stdarg.h>. */
+// The userland build is freestanding, so the va_* facility comes from
+// compiler builtins instead of a hosted <stdarg.h>.
 typedef __builtin_va_list va_list;
 #define va_start __builtin_va_start
 #define va_end __builtin_va_end

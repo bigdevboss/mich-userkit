@@ -5,9 +5,9 @@
 
 #define WNOHANG 1
 
-/* A status word encodes either a bounded exit code or a signal death:
-   signalled statuses carry the termsig in the low seven bits, exactly the
-   shape POSIX WIFSIGNALED reads. */
+// A status word encodes either a bounded exit code or a signal death:
+// signalled statuses carry the termsig in the low seven bits, exactly the
+// shape POSIX WIFSIGNALED reads.
 #define WIFEXITED(status) (((status) & 0xFF) == 0)
 #define WEXITSTATUS(status) (((status) >> 8) & 0xFF)
 #define WIFSIGNALED(status) ((((status) & 0x7F) > 0) && \

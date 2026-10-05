@@ -6,9 +6,9 @@
 #include <sys/stat.h>
 #include <mich/syscall.h>
 
-/* Page-mapped heap: blocks live in the arena between the heap base and the
-   program break, walked in address order, so coalescing only needs the two
-   physical neighbors of a freed block. */
+// Page-mapped heap: blocks live in the arena between the heap base and the
+// program break, walked in address order, so coalescing only needs the two
+// physical neighbors of a freed block.
 #define MALLOC_ALIGN 16
 #define MALLOC_MIN_PAYLOAD 16
 #define MALLOC_GROW 65536
@@ -52,8 +52,8 @@ static void heap_split(struct malloc_block *block, size_t payload) {
 static struct malloc_block *heap_extend(size_t payload) {
     size_t total = payload + sizeof(struct malloc_block);
     size_t chunk = total < MALLOC_GROW ? MALLOC_GROW : total;
-    /* The break syscall rejects growth past the bounded heap window by
-       returning the unchanged break, which this compare turns into failure. */
+    // The break syscall rejects growth past the bounded heap window by
+    // returning the unchanged break, which this compare turns into failure.
     if (mich_syscall1(MICH_SYS_POSIX_BRK, (unsigned long)(heap_break + chunk)) !=
         (long)(heap_break + chunk))
         return 0;
@@ -107,8 +107,8 @@ void free(void *pointer) {
          (size_t)block < heap_break;
          previous = block, block = block_after(block)) {
         if ((char *)block + sizeof(struct malloc_block) == pointer) {
-            /* Releasing an already free block would corrupt its neighbors,
-               so a double free is ignored instead of merged twice. */
+            // Releasing an already free block would corrupt its neighbors,
+            // so a double free is ignored instead of merged twice.
             if (block->used) {
                 block->used = 0;
                 heap_coalesce(block, previous);

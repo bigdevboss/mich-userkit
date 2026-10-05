@@ -6,14 +6,14 @@
 #include <errno.h>
 #include <mich/syscall.h>
 
-/* The serial console syscall drains one nul-terminated string of at most
-   256 bytes per call, so streaming output flushes in bounded chunks. */
+// The serial console syscall drains one nul-terminated string of at most
+// 256 bytes per call, so streaming output flushes in bounded chunks.
 #define MICH_STDIO_STREAM 128
 #define MICH_STDIO_NUMBER 24
 #define MICH_STDIO_WIDTH 512
 
-/* One buffer equals one POSIX_IO_MAX descriptor chunk, so a full flush or
-   refill is a single request on the kernel facade. */
+// One buffer equals one POSIX_IO_MAX descriptor chunk, so a full flush or
+// refill is a single request on the kernel facade.
 #define STDIO_BUFFER 512
 
 struct stdio_file {
@@ -28,8 +28,8 @@ struct stdio_file {
 };
 
 struct stdio_format {
-    char *buffer;        /* zero when formatting streams to the console */
-    FILE *file;          /* set when formatting writes into a FILE */
+    char *buffer; // zero when formatting streams to the console
+    FILE *file; // set when formatting writes into a FILE
     size_t capacity;
     size_t length;
     char stream[MICH_STDIO_STREAM];
@@ -46,8 +46,8 @@ static void stdio_flush(struct stdio_format *state) {
 
 static void stdio_emit(struct stdio_format *state, char value) {
     if (state->buffer) {
-        /* Keep the terminator slot reserved; the return value still
-           reports the full untruncated length like POSIX snprintf. */
+        // Keep the terminator slot reserved; the return value still
+        // reports the full untruncated length like POSIX snprintf.
         if (state->length + 1 < state->capacity)
             state->buffer[state->length] = value;
         state->length++;
@@ -83,7 +83,7 @@ static void stdio_emit_number(struct stdio_format *state,
     int total = count + (negative ? 1 : 0);
     int padding = width > total ? width - total : 0;
     char fill = (zero_pad && !left_align) ? '0' : ' ';
-    /* Space padding goes before the sign, zero padding after it. */
+    // Space padding goes before the sign, zero padding after it.
     if (fill == ' ' && !left_align) stdio_pad(state, ' ', padding);
     if (negative) stdio_emit(state, '-');
     if (fill == '0') stdio_pad(state, '0', padding);
@@ -184,8 +184,8 @@ static void stdio_format_run(struct stdio_format *state,
             stdio_emit(state, '%');
             break;
         default:
-            /* Unknown conversions are forwarded verbatim instead of
-               being silently dropped. */
+            // Unknown conversions are forwarded verbatim instead of
+            // being silently dropped.
             stdio_emit(state, '%');
             if (*format) stdio_emit(state, *format);
             break;
@@ -275,8 +275,8 @@ int putchar(int character) {
 
 static int file_flush(FILE *file) {
     if (file->reading) {
-        /* ISO C leaves input fflush undefined; rewinding the descriptor to
-           the logical position keeps a later ftell or fseek honest. */
+        // ISO C leaves input fflush undefined; rewinding the descriptor to
+        // the logical position keeps a later ftell or fseek honest.
         if (file->begin < file->end &&
             lseek(file->descriptor, -(off_t)(file->end - file->begin),
                   SEEK_CUR) == (off_t)-1) {
@@ -290,8 +290,8 @@ static int file_flush(FILE *file) {
     if (!file->pending) return 0;
     ssize_t written = write(file->descriptor, file->buffer, file->pending);
     if (written < 0 || (size_t)written < file->pending) {
-        /* The facade reports a full VFS file as a short or failed write;
-           keep the unwritten tail staged so the error is observable. */
+        // The facade reports a full VFS file as a short or failed write;
+        // keep the unwritten tail staged so the error is observable.
         if (written > 0) {
             memmove(file->buffer, file->buffer + written,
                     file->pending - (size_t)written);
@@ -338,8 +338,8 @@ FILE *fopen(const char *path, const char *mode) {
     }
     for (int index = 1; mode[index]; index++) {
         if (mode[index] == 'b') continue;
-        /* Update modes need a read/write descriptor surface the kernel
-           facade does not offer yet. */
+        // Update modes need a read/write descriptor surface the kernel
+        // facade does not offer yet.
         if (mode[index] != '+') errno = EINVAL;
         else errno = EOPNOTSUPP;
         return 0;
@@ -507,8 +507,8 @@ int fseek(FILE *file, long offset, int whence) {
     }
     off_t adjusted = (off_t)offset;
     if (file->reading) {
-        /* SEEK_CUR is relative to the consumed position, not the end of
-           the read-ahead buffer. */
+        // SEEK_CUR is relative to the consumed position, not the end of
+        // the read-ahead buffer.
         if (whence == SEEK_CUR) adjusted -= (off_t)(file->end - file->begin);
         file->begin = 0;
         file->end = 0;

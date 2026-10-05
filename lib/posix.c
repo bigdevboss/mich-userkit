@@ -19,9 +19,9 @@ static int copy_path(char destination[VFS_PATH_MAX], const char *source) {
         length++;
     }
     if (source[length]) return -ENAMETOOLONG;
-    /* The dispatcher rejects a request whose last path byte is not zero,
-       so the whole tail past the string must be cleared, not just the
-       terminator: leftover stack bytes would read as a non canonical path. */
+    // The dispatcher rejects a request whose last path byte is not zero,
+    // so the whole tail past the string must be cleared, not just the
+    // terminator: leftover stack bytes would read as a non canonical path.
     for (u32 index = length; index < VFS_PATH_MAX; index++)
         destination[index] = 0;
     return 0;
@@ -379,9 +379,9 @@ ssize_t readlink(const char *path, char *buffer, size_t size) {
     if (copied) return result_int(copied);
     long result = request_call(POSIX_SYSCALL_READLINK, &request);
     if (result < 0) return result_int(result);
-    /* The system call keeps the POSIX contract: the buffer gets the raw
-       bytes, no terminator, and a smaller caller buffer truncates while
-       the return keeps the count actually placed. */
+    // The system call keeps the POSIX contract: the buffer gets the raw
+    // bytes, no terminator, and a smaller caller buffer truncates while
+    // the return keeps the count actually placed.
     size_t count = (size_t)result;
     if (count > size) count = size;
     for (size_t index = 0; index < count; index++)
@@ -540,9 +540,9 @@ int nanosleep(const struct timespec *requested, struct timespec *remaining) {
         requested->tv_sec, requested->tv_nsec, 0, 0
     };
     int failed = result_int(request_call(POSIX_SYSCALL_NANOSLEEP, &request));
-    /* The park is interruptible now (a signal breaks it with EINTR), and
-       POSIX requires the remainder report exactly then: copy it through
-       on the failure path too, not only on the sleep-out success path. */
+    // The park is interruptible now (a signal breaks it with EINTR), and
+    // POSIX requires the remainder report exactly then: copy it through
+    // on the failure path too, not only on the sleep-out success path.
     if (remaining) {
         remaining->tv_sec = (time_t)request.remaining_sec;
         remaining->tv_nsec = (long)request.remaining_nsec;
@@ -566,8 +566,8 @@ unsigned int sleep(unsigned int seconds) {
 }
 
 int gettimeofday(struct timeval *out, void *timezone) {
-    /* The profile carries no timezone table, so the second pointer stays
-       NULL rather than silently reading garbage. */
+    // The profile carries no timezone table, so the second pointer stays
+    // NULL rather than silently reading garbage.
     if (!out || timezone) {
         errno = EINVAL;
         return -1;
@@ -610,8 +610,8 @@ int pledge(const char *promises, const char *execpromises) {
     struct posix_pledge_request request;
     for (u32 index = 0; index < sizeof(request); index++)
         ((u8 *)&request)[index] = 0;
-    /* A NULL half means "leave it alone" and an empty string a real
-       empty set; the flags carry that distinction across the copy. */
+    // A NULL half means "leave it alone" and an empty string a real
+    // empty set; the flags carry that distinction across the copy.
     if (promises) {
         int copied = copy_promise(request.promises, promises);
         if (copied) return result_int(copied);
@@ -662,9 +662,9 @@ int sigaction(int signo, const struct sigaction *action,
         request.mask = action->sa_mask.bits;
         if (action->sa_handler != SIG_DFL &&
             action->sa_handler != SIG_IGN) {
-            /* The kernel has no trampoline of its own, so a caught
-               handler always rides with the libc restorer unless the
-               caller brought one. */
+            // The kernel has no trampoline of its own, so a caught
+            // handler always rides with the libc restorer unless the
+            // caller brought one.
             request.restorer = action->sa_restorer ?
                 (uptr_t)action->sa_restorer : (uptr_t)&mich_sigreturn;
         }
@@ -691,8 +691,8 @@ void (*signal(int signo, void (*handler)(int)))(int) {
 }
 
 int sigprocmask(int how, const sigset_t *set, sigset_t *previous) {
-    /* POSIX reads the previous mask even when the new one is missing,
-       which the request shape answers with a no-op setmask of zero. */
+    // POSIX reads the previous mask even when the new one is missing,
+    // which the request shape answers with a no-op setmask of zero.
     struct posix_sigprocmask_request request;
     request.how = set ? (u32)how : POSIX_SIG_SETMASK;
     request.reserved = 0;

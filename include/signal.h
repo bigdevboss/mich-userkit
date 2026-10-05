@@ -5,15 +5,15 @@
 
 #define SIG_ERR ((void (*)(int))-1)
 
-/* The bounded signal surface of the POSIX application profile: a fixed
-   set of classic signals, one bit each, no queues, no job control, and no
-   realtime extensions. Handlers take the bare signal number, so there is
-   no siginfo path. */
+// The bounded signal surface of the POSIX application profile: a fixed
+// set of classic signals, one bit each, no queues, no job control, and no
+// realtime extensions. Handlers take the bare signal number, so there is
+// no siginfo path.
 
 typedef int sig_atomic_t;
 
-/* Signal numbers, the POSIX values. Anything outside this set is EINVAL
-   at the syscall boundary. */
+// Signal numbers, the POSIX values. Anything outside this set is EINVAL
+// at the syscall boundary.
 #define SIGHUP 1
 #define SIGINT 2
 #define SIGQUIT 3
@@ -32,9 +32,9 @@ typedef int sig_atomic_t;
 #define SIG_DFL ((void (*)(int))0)
 #define SIG_IGN ((void (*)(int))1)
 
-/* The kernel reads no sigaction flags beyond the restorer ride, which the
-   wrapper supplies on its own. SA_RESTART stays unsupported: interrupted
-   calls answer EINTR. */
+// The kernel reads no sigaction flags beyond the restorer ride, which the
+// wrapper supplies on its own. SA_RESTART stays unsupported: interrupted
+// calls answer EINTR.
 #define SA_NOCLDSTOP 1
 #define SA_NOCLDWAIT 2
 #define SA_RESTART 0x10000000
@@ -44,8 +44,8 @@ typedef int sig_atomic_t;
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
-/* One bit per signal, signals 1 through 31. The helpers keep the set
-   opaque the way portable code expects. */
+// One bit per signal, signals 1 through 31. The helpers keep the set
+// opaque the way portable code expects.
 typedef struct { unsigned long bits; } sigset_t;
 
 static inline void sigemptyset(sigset_t *set) {
@@ -73,9 +73,9 @@ struct sigaction {
     void (*sa_handler)(int);
     sigset_t sa_mask;
     int sa_flags;
-    /* The return trampoline the kernel stacks for the handler. The
-       wrapper installs its own when the caller leaves this NULL, which
-       every caller in this profile does. */
+    // The return trampoline the kernel stacks for the handler. The
+    // wrapper installs its own when the caller leaves this NULL, which
+    // every caller in this profile does.
     void (*sa_restorer)(void);
 };
 
