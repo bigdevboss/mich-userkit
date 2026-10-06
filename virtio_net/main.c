@@ -839,7 +839,10 @@ static int rx_completion_valid(struct virtio_net_capsule *capsule,
         NET_PACKET_HEADROOM - VIRTIO_NET_HEADER_SIZE;
     for (unsigned int index = 0; index < 10; index++)
         if (header[index]) return 0;
-    return header[10] <= 1 && header[11] == 0;
+    // The trailing num_buffers pair is undefined until mergeable RX buffers
+    // are negotiated, which this capsule never requests: a stale pair there
+    // rejected live frames and silenced the interface for good.
+    return 1;
 }
 
 static int process_rx_head(struct virtio_net_capsule *capsule,
