@@ -12,6 +12,8 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <poll.h>
+#include <sys/select.h>
 #include <time.h>
 #include <mich/syscall.h>
 
@@ -1335,6 +1337,136 @@ static int pipe_demo(void) {
     return 0;
 }
 
+static int poll_demo(void) {
+    static unsigned char block[128];
+    static unsigned char mirror[128];
+    for (unsigned int index = 0; index < sizeof(block); index++)
+        block[index] = (unsigned char)(index * 13u + 7u);
+    struct timespec settle;
+    settle.tv_sec = 0;
+    settle.tv_nsec = 50 * 1000 * 1000;
+    int descriptors[2];
+    struct pollfd list[2];
+    int status = 0;
+
+    // A null list is the POSIX sleep spelling, and the timer under it is
+    // the one the park uses: the elapsed reading has to reach the request.
+    struct timespec before;
+    struct timespec after;
+    if (clock_gettime(CLOCK_MONOTONIC, &before)) return -1;
+    if (poll(0, 0, 30) != 0) return -1;
+    if (clock_gettime(CLOCK_MONOTONIC, &after)) return -1;
+    long long elapsed = (after.tv_sec - before.tv_sec) * 1000 +
+        (after.tv_nsec - before.tv_nsec) / 1000000;
+    if (elapsed < 20) return -1;
+    if (poll(0, 0, 0) != 0) return -1;
+
+    // An empty pipe with a live writer answers nothing, and the zero
+    // timeout must return without parking for it.
+    if (pipe(descriptors)) return -1;
+    list[0].fd = descriptors[0];
+    list[0].events = POLLIN;
+    list[0].revents = 0;
+    if (poll(list, 1, 0) != 0 || list[0].revents != 0) return -1;
+    // The writer is a child parked on a sleep, so the parent is already
+    // parked in poll when the bytes land: the answer has to come from the
+    // pipe wake path, not from the readiness scan the call starts with.
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        nanosleep(&settle, 0);
+        if (write(descriptors[1], block, 64) != 64) _exit(70);
+        _exit(0);
+    }
+    if (poll(list, 1, 1000) != 1 || list[0].revents != POLLIN) return -1;
+    if (read(descriptors[0], mirror, 64) != 64) return -1;
+    for (unsigned int index = 0; index < 64u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (waitpid(child, &status, 0) != child || status != 0) return -1;
+
+    // The same descriptor reports the timeout as zero ready, the last
+    // writer leaving as a hangup, and its own close as NVAL.
+    if (poll(list, 1, 100) != 0 || list[0].revents != 0) return -1;
+    if (close(descriptors[1])) return -1;
+    if (poll(list, 1, 100) != 1 || list[0].revents != POLLHUP) return -1;
+    if (close(descriptors[0])) return -1;
+    if (poll(list, 1, 0) != 1 || list[0].revents != POLLNVAL) return -1;
+    // A negative descriptor is the ignore slot, not an answer.
+    list[0].fd = -1;
+    list[0].events = POLLIN;
+    list[0].revents = 0;
+    if (poll(list, 1, 0) != 0 || list[0].revents != 0) return -1;
+
+    // select rides poll underneath: one readable pipe, and the sets come
+    // back scoped to the descriptors that were asked about.
+    if (pipe(descriptors)) return -1;
+    if (write(descriptors[1], block, 32) != 32) return -1;
+    fd_set reads;
+    fd_set writes;
+    FD_ZERO(&reads);
+    FD_ZERO(&writes);
+    FD_SET(descriptors[0], &reads);
+    struct timeval none;
+    none.tv_sec = 0;
+    none.tv_usec = 0;
+    if (select(descriptors[0] + 1, &reads, &writes, 0, &none) != 1) return -1;
+    if (!FD_ISSET(descriptors[0], &reads)) return -1;
+    if (FD_ISSET(descriptors[1], &reads) || FD_ISSET(descriptors[0], &writes))
+        return -1;
+    if (read(descriptors[0], mirror, 32) != 32) return -1;
+    if (close(descriptors[0]) || close(descriptors[1])) return -1;
+
+    // A datagram socket: an idle one answers nothing on the read side
+    // while a bound peer is always ready to write, the queued datagram is
+    // what makes it readable, and the park wakes on the child's send.
+    int receiver = socket(AF_INET, SOCK_DGRAM, 0);
+    int sender = socket(AF_INET, SOCK_DGRAM, 0);
+    if (receiver < 0 || sender < 0) return -1;
+    struct sockaddr_in receiver_address;
+    struct sockaddr_in sender_address;
+    fill_loopback_address(&receiver_address, 31060);
+    fill_loopback_address(&sender_address, 31061);
+    if (bind(receiver, (struct sockaddr *)&receiver_address,
+             sizeof(receiver_address))) return -1;
+    if (bind(sender, (struct sockaddr *)&sender_address,
+             sizeof(sender_address))) return -1;
+    list[0].fd = receiver;
+    list[0].events = POLLIN;
+    list[0].revents = 0;
+    list[1].fd = sender;
+    list[1].events = POLLOUT;
+    list[1].revents = 0;
+    if (poll(list, 2, 0) != 1 || list[0].revents != 0 ||
+        list[1].revents != POLLOUT) return -1;
+    child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        nanosleep(&settle, 0);
+        if (sendto(sender, block, 48, 0,
+                   (struct sockaddr *)&receiver_address,
+                   sizeof(receiver_address)) != 48) _exit(71);
+        _exit(0);
+    }
+    list[0].revents = 0;
+    list[1].revents = 0;
+    // Only the receiver is on the list here: the sender is ready to write
+    // for its whole life, and a poll that watches it answers at once
+    // instead of parking for the datagram.
+    if (poll(list, 1, 1000) != 1 || list[0].revents != POLLIN) return -1;
+    struct sockaddr_in source;
+    socklen_t source_length = sizeof(source);
+    if (recvfrom(receiver, mirror, sizeof(mirror), 0,
+                 (struct sockaddr *)&source, &source_length) != 48)
+        return -1;
+    for (unsigned int index = 0; index < 48u; index++)
+        if (mirror[index] != block[index]) return -1;
+    if (waitpid(child, &status, 0) != child || status != 0) return -1;
+    list[0].revents = 0;
+    if (poll(list, 1, 0) != 0 || list[0].revents != 0) return -1;
+    if (close(receiver) || close(sender)) return -1;
+    return 0;
+}
+
 static int child_role(void) {
     static const char payload[] = "posixdemo-child-payload";
     char buffer[32];
@@ -1404,6 +1536,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX signals pass\n");
     if (socket_demo()) return 66;
     mich_write("Mich x86_64: POSIX sockets pass\n");
+    if (poll_demo()) return 100;
+    mich_write("Mich x86_64: POSIX poll pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     if (pledge_demo()) return 98;

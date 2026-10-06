@@ -9,6 +9,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <mich/syscall.h>
+#include <poll.h>
+#include <sys/select.h>
 #include <posix_abi.h>
 
 int errno;
@@ -68,6 +70,105 @@ int pipe(int descriptors[2]) {
     descriptors[0] = request.descriptors[0];
     descriptors[1] = request.descriptors[1];
     return 0;
+}
+
+// The kernel takes the whole list in one copied request, so the bound is
+// the descriptor table and not a staging size; a longer list is refused
+// rather than cut.
+int poll(struct pollfd *descriptors, nfds_t count, int timeout_ms) {
+    if (!descriptors && count) {
+        errno = EINVAL;
+        return -1;
+    }
+    // An empty list is the POSIX way of spelling a sleep, and the kernel
+    // request never carries fewer than one descriptor: answer it here.
+    if (!count) {
+        if (timeout_ms < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        struct timespec interval;
+        interval.tv_sec = (time_t)(timeout_ms / 1000);
+        interval.tv_nsec = (long)(timeout_ms % 1000) * 1000000L;
+        return nanosleep(&interval, 0);
+    }
+    if (count > POSIX_POLL_FD_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct posix_poll_request request;
+    for (u32 index = 0; index < sizeof(request); index++)
+        ((u8 *)&request)[index] = 0;
+    request.count = count;
+    for (u32 index = 0; index < count; index++) {
+        request.fds[index].descriptor = descriptors[index].fd;
+        request.fds[index].events = (u16)descriptors[index].events;
+    }
+    long result = mich_syscall2(POSIX_SYSCALL_POLL, (unsigned long)&request,
+                                (unsigned long)timeout_ms);
+    if (result < 0) return result_int(result);
+    for (u32 index = 0; index < count; index++)
+        descriptors[index].revents = (short)request.fds[index].revents;
+    return (int)result;
+}
+
+// select is a shim over poll: the sets become a poll list, and the answer
+// lands back in the sets. The kernel reports only what was asked for plus
+// the error bits, so any answer on a watched descriptor is that direction
+// being ready, which is what a caller tests for anyway.
+int select(int count, fd_set *read_set, fd_set *write_set,
+           fd_set *except_set, struct timeval *timeout) {
+    if (count < 0 || count > FD_SETSIZE) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (except_set) {
+        for (unsigned int fd = 0; fd < FD_SETSIZE; fd++)
+            if (FD_ISSET(fd, except_set)) {
+                errno = EINVAL;
+                return -1;
+            }
+    }
+    for (unsigned int fd = (unsigned int)count; fd < FD_SETSIZE; fd++) {
+        if (read_set) FD_CLR(fd, read_set);
+        if (write_set) FD_CLR(fd, write_set);
+    }
+    struct pollfd list[FD_SETSIZE];
+    unsigned int used = 0;
+    for (unsigned int fd = 0; fd < (unsigned int)count; fd++) {
+        short events = 0;
+        if (read_set && FD_ISSET(fd, read_set)) events |= POLLIN;
+        if (write_set && FD_ISSET(fd, write_set)) events |= POLLOUT;
+        if (!events) continue;
+        list[used].fd = (int)fd;
+        list[used].events = events;
+        list[used].revents = 0;
+        used++;
+    }
+    int timeout_ms = -1;
+    if (timeout) {
+        if (timeout->tv_sec < 0 || timeout->tv_usec < 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        // Rounded up, so a select never returns before its timeout the way
+        // nanosleep never wakes early.
+        timeout_ms = (int)(timeout->tv_sec * 1000 +
+                           (timeout->tv_usec + 999) / 1000);
+    }
+    int result = poll(list, used, timeout_ms);
+    if (read_set) FD_ZERO(read_set);
+    if (write_set) FD_ZERO(write_set);
+    if (except_set) FD_ZERO(except_set);
+    if (result <= 0) return result;
+    for (unsigned int index = 0; index < used; index++) {
+        if (!list[index].revents) continue;
+        if (read_set && (list[index].events & POLLIN))
+            FD_SET(list[index].fd, read_set);
+        if (write_set && (list[index].events & POLLOUT))
+            FD_SET(list[index].fd, write_set);
+    }
+    return result;
 }
 
 static ssize_t io_call(u32 number, int fd, void *buffer, size_t length) {
