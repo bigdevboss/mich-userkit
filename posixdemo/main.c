@@ -14,6 +14,8 @@
 #include <sys/wait.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <time.h>
 #include <mich/syscall.h>
 
@@ -1484,6 +1486,78 @@ static int child_role(void) {
     return 42;
 }
 
+// The console is a devfs node over the serial line: opening it yields the
+// descriptor the termios family answers on, a write to it leaves through
+// the line discipline's output map, and a request the tty does not carry
+// is refused rather than answered with a zero.
+static int tty_demo(void) {
+    static const char marker[] = "Mich x86_64: POSIX tty console pass\n";
+    int console = open("/dev/console", O_RDWR);
+    if (console < 0) return -1;
+    struct termios settings;
+    if (tcgetattr(console, &settings)) return -1;
+    if (!(settings.c_lflag & ICANON) || !(settings.c_lflag & ECHO) ||
+        !(settings.c_lflag & ISIG))
+        return -1;
+    if (!(settings.c_iflag & ICRNL) || !(settings.c_oflag & ONLCR))
+        return -1;
+    if (settings.c_cc[VINTR] != 3 || settings.c_cc[VEOF] != 4 ||
+        settings.c_cc[VERASE] != 0x7F)
+        return -1;
+    // Clearing echo and reading it back proves the change landed on the
+    // one line the console holds; the original comes back afterwards.
+    struct termios quiet = settings;
+    quiet.c_lflag &= ~(tcflag_t)ECHO;
+    if (tcsetattr(console, TCSANOW, &quiet)) return -1;
+    struct termios probe;
+    if (tcgetattr(console, &probe)) return -1;
+    if (probe.c_lflag & ECHO) return -1;
+    if (tcsetattr(console, TCSANOW, &settings)) return -1;
+    if (tcgetattr(console, &probe)) return -1;
+    if (!(probe.c_lflag & ECHO)) return -1;
+
+    struct winsize size;
+    if (ioctl(console, TIOCGWINSZ, &size)) return -1;
+    if (size.ws_row != 25 || size.ws_col != 80) return -1;
+    size.ws_row = 40;
+    size.ws_col = 100;
+    if (ioctl(console, TIOCSWINSZ, &size)) return -1;
+    if (ioctl(console, TIOCGWINSZ, &size)) return -1;
+    if (size.ws_row != 40 || size.ws_col != 100) return -1;
+
+    // Nothing has been typed into this console, and a blocking read lands
+    // with the job-control work; today the empty line answers zero bytes
+    // rather than parking.
+    char typed[8];
+    if (read(console, typed, sizeof(typed)) != 0) return -1;
+
+    // /dev/null: reads answer end of file and writes are swallowed.
+    int null = open("/dev/null", O_RDWR);
+    if (null < 0) return -1;
+    if (read(null, typed, sizeof(typed)) != 0) return -1;
+    if (write(null, "gone", 4) != 4) return -1;
+    if (close(null)) return -1;
+
+    // A descriptor that is not a tty answers ENOTTY, and so does a request
+    // the tty does not carry.
+    int descriptors[2];
+    if (pipe(descriptors)) return -1;
+    errno = 0;
+    if (ioctl(descriptors[0], TCGETS, &settings) != -1 || errno != ENOTTY)
+        return -1;
+    errno = 0;
+    if (ioctl(console, 0x9999, &settings) != -1 || errno != ENOTTY) return -1;
+    if (close(descriptors[0]) || close(descriptors[1])) return -1;
+
+    // The marker itself is the write path: it leaves through the line
+    // discipline and reaches the serial console the runner reads.
+    if (write(console, marker, sizeof(marker) - 1) !=
+        (ssize_t)(sizeof(marker) - 1))
+        return -1;
+    if (close(console)) return -1;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && string_equals(argv[1], "sandbox")) {
         if (!environ || !string_equals(environ[0], "POSIXDEMO=sandbox") ||
@@ -1538,6 +1612,7 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX sockets pass\n");
     if (poll_demo()) return 100;
     mich_write("Mich x86_64: POSIX poll pass\n");
+    if (tty_demo()) return 101;
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     if (pledge_demo()) return 98;

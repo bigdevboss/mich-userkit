@@ -34,6 +34,7 @@ extern int errno;
 #define ERANGE 34
 #define EDEADLK 35
 #define ENAMETOOLONG 36
+#define ENOTTY 25
 #define ENOSYS 38
 #define ENOTEMPTY 39
 #define ELOOP 40

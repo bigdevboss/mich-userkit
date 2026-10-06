@@ -11,6 +11,7 @@
 #include <mich/syscall.h>
 #include <poll.h>
 #include <sys/select.h>
+#include <termios.h>
 #include <posix_abi.h>
 
 int errno;
@@ -169,6 +170,29 @@ int select(int count, fd_set *read_set, fd_set *write_set,
             FD_SET(list[index].fd, write_set);
     }
     return result;
+}
+
+int ioctl(int descriptor, unsigned long request, void *argument) {
+    long result = mich_syscall3(POSIX_SYSCALL_IOCTL,
+                                (unsigned long)descriptor, request,
+                                (unsigned long)argument);
+    return result_int(result);
+}
+
+int tcgetattr(int descriptor, struct termios *termios) {
+    if (!termios) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ioctl(descriptor, TCGETS, termios);
+}
+
+int tcsetattr(int descriptor, int actions, const struct termios *termios) {
+    if (!termios || actions < 0 || actions > TCSAFLUSH) {
+        errno = EINVAL;
+        return -1;
+    }
+    return ioctl(descriptor, TCSETS, (void *)termios);
 }
 
 static ssize_t io_call(u32 number, int fd, void *buffer, size_t length) {
