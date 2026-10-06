@@ -1525,11 +1525,36 @@ static int tty_demo(void) {
     if (ioctl(console, TIOCGWINSZ, &size)) return -1;
     if (size.ws_row != 40 || size.ws_col != 100) return -1;
 
-    // Nothing has been typed into this console, and a blocking read lands
-    // with the job-control work; today the empty line answers zero bytes
-    // rather than parking.
+    // Nothing has been typed into this console, so a read parks rather
+    // than answering zero bytes. The readiness row says the same thing,
+    // and the child below proves the park by still running after the
+    // pause, which a read that answered would not be.
+    struct pollfd watch;
+    watch.fd = console;
+    watch.events = POLLIN | POLLOUT;
+    watch.revents = 0;
+    if (poll(&watch, 1, 0) != 1) return -1;
+    if (!(watch.revents & POLLOUT) || (watch.revents & POLLIN)) return -1;
+
     char typed[8];
-    if (read(console, typed, sizeof(typed)) != 0) return -1;
+    int typed_child = fork();
+    if (typed_child < 0) return -1;
+    if (typed_child == 0) {
+        // A parked read only comes back on input, a signal, or death, and
+        // this profile has no way to type into the console yet.
+        if (read(console, typed, sizeof(typed)) < 0) _exit(41);
+        _exit(42);
+    }
+    struct timespec typed_pause;
+    typed_pause.tv_sec = 0;
+    typed_pause.tv_nsec = 50000000;
+    if (nanosleep(&typed_pause, 0)) return -1;
+    int typed_status = 0;
+    if (waitpid(typed_child, &typed_status, WNOHANG) != 0) return -1;
+    if (kill(typed_child, SIGKILL)) return -1;
+    if (waitpid(typed_child, &typed_status, 0) != typed_child) return -1;
+    if (!WIFSIGNALED(typed_status) || WTERMSIG(typed_status) != SIGKILL)
+        return -1;
 
     // /dev/null: reads answer end of file and writes are swallowed.
     int null = open("/dev/null", O_RDWR);

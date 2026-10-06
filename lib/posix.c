@@ -172,6 +172,33 @@ int select(int count, fd_set *read_set, fd_set *write_set,
     return result;
 }
 
+// Process groups and the terminal's foreground group. The kernel refuses a
+// group that names nobody live, which is the only error a caller can get
+// besides ESRCH from the waitpid-style lookups.
+pid_t getpgrp(void) {
+    long result = mich_syscall2(POSIX_SYSCALL_GETPGRP, 0, 0);
+    return (pid_t)result_int(result);
+}
+
+int setpgid(pid_t pid, pid_t pgid) {
+    long result = mich_syscall2(POSIX_SYSCALL_SETPGID, (unsigned long)pid,
+                                (unsigned long)pgid);
+    return result_int(result);
+}
+
+pid_t tcgetpgrp(int descriptor) {
+    long result = mich_syscall2(POSIX_SYSCALL_TCGETPGRP,
+                                (unsigned long)descriptor, 0);
+    return (pid_t)result_int(result);
+}
+
+int tcsetpgrp(int descriptor, pid_t pgid) {
+    long result = mich_syscall2(POSIX_SYSCALL_TCSETPGRP,
+                                (unsigned long)descriptor,
+                                (unsigned long)pgid);
+    return result_int(result);
+}
+
 int ioctl(int descriptor, unsigned long request, void *argument) {
     long result = mich_syscall3(POSIX_SYSCALL_IOCTL,
                                 (unsigned long)descriptor, request,

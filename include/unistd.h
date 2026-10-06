@@ -72,4 +72,13 @@ int unveil(const char *path, const char *permissions);
 // SIGPIPE.
 int pipe(int descriptors[2]);
 
+// Process groups. The profile has a single session, so a group is created
+// by naming the leader's pid; setpgid(0, 0) puts the caller in a group of
+// its own, which is what a shell does before handing over the terminal.
+pid_t getpgrp(void);
+int setpgid(pid_t pid, pid_t pgid);
+pid_t tcgetpgrp(int descriptor);
+int tcsetpgrp(int descriptor, pid_t pgid);
+
+
 #endif
