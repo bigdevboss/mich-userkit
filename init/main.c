@@ -213,14 +213,19 @@ __attribute__((noinline)) static int posix_stress_test(void) {
     return 0;
 }
 
-static int posix_application_test(void) {
+static int posix_application_test(u64 module_flags) {
     char *const demo_argv[] = { "/boot/posixdemo", "demo", 0 };
-    char *const demo_envp[] = { "POSIXDEMO=stage6", 0 };
+    char *const demo_envp[] = { "POSIXDEMO=stage6", "POSIXTTY=wire", 0 };
+    char *const demo_plain[] = { "POSIXDEMO=stage6", 0 };
+    // The input stage needs a host on the other end of the wire, so only
+    // the console wire profile asks for it.
+    char *const *environment = module_flags & BD_MODULE_TTY_WIRE ?
+        demo_envp : demo_plain;
     int status = -1;
     int child = fork();
     if (child < 0) return -1;
     if (!child) {
-        execve("/boot/posixdemo", demo_argv, demo_envp);
+        execve("/boot/posixdemo", demo_argv, environment);
         _exit(9);
     }
     // The application runs to completion without a sync contract, so a
@@ -1315,7 +1320,7 @@ int main(u64 role, u64 module_flags) {
         mich_write("Mich x86_64: POSIX userspace facade pass\n");
         if (posix_user_process_test()) stop();
         mich_write("Mich x86_64: POSIX userspace process pass\n");
-        if (posix_application_test()) stop();
+        if (posix_application_test(module_flags)) stop();
         mich_write("Mich x86_64: POSIX static application pass\n");
         if (posix_stress_test()) stop();
     }

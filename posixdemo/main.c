@@ -1662,6 +1662,39 @@ static int tty_demo(void) {
     return 0;
 }
 
+// The wire. A host on the other end of the serial port types a line and
+// the read that parks on it is what proves the receive path: nothing else
+// can complete it. The ready marker is the host's cue to type, and the
+// pass marker says the line arrived byte for byte with the CR->NL mapping
+// and the echo the discipline owes.
+static int wire_demo(void) {
+    static const char ready[] = "Mich x86_64: POSIX tty wire ready\n";
+    static const char passed[] = "Mich x86_64: POSIX tty wire pass\n";
+    int console = open("/dev/tty", O_RDWR);
+    if (console < 0) return -1;
+    struct termios settings;
+    if (tcgetattr(console, &settings)) return -1;
+    if (!(settings.c_lflag & ICANON) || !(settings.c_lflag & ECHO) ||
+        !(settings.c_iflag & ICRNL))
+        return -1;
+    if (write(console, ready, sizeof(ready) - 1) !=
+        (ssize_t)(sizeof(ready) - 1))
+        return -1;
+    // The host types "wire1" and a carriage return; ICRNL turns that
+    // return into the newline the line ends with.
+    char line[16];
+    ssize_t got = read(console, line, sizeof(line));
+    if (got != 6) return -1;
+    static const char expected[] = { 'w', 'i', 'r', 'e', '1', '\n' };
+    for (int index = 0; index < 6; index++)
+        if (line[index] != expected[index]) return -1;
+    if (write(console, passed, sizeof(passed) - 1) !=
+        (ssize_t)(sizeof(passed) - 1))
+        return -1;
+    if (close(console)) return -1;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && string_equals(argv[1], "sandbox")) {
         if (!environ || !string_equals(environ[0], "POSIXDEMO=sandbox") ||
@@ -1675,10 +1708,18 @@ int main(int argc, char **argv) {
             return 76;
         return child_role();
     }
+    // The console wire stage only runs where a host types into the port,
+    // which the boot says through the second environment entry.
+    int wire = 0;
     if (argc != 2 || !string_equals(argv[0], "/boot/posixdemo") ||
         !string_equals(argv[1], "demo") || !environ ||
-        !string_equals(environ[0], "POSIXDEMO=stage6") || environ[1])
+        !string_equals(environ[0], "POSIXDEMO=stage6"))
         return 80;
+    if (environ[1]) {
+        if (!string_equals(environ[1], "POSIXTTY=wire") || environ[2])
+            return 80;
+        wire = 1;
+    }
     char cwd[32];
     if (!getcwd(cwd, sizeof(cwd)) || !string_equals(cwd, "/")) return 81;
     mich_write("Mich x86_64: POSIX application alive\n");
@@ -1717,6 +1758,7 @@ int main(int argc, char **argv) {
     if (poll_demo()) return 100;
     mich_write("Mich x86_64: POSIX poll pass\n");
     if (tty_demo()) return 101;
+    if (wire && wire_demo()) return 102;
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     if (pledge_demo()) return 98;
