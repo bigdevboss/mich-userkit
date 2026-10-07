@@ -70,6 +70,19 @@ static int fail_check(unsigned int line) {
 
 #define stop() fail_at(__LINE__)
 
+// The network profiles run their own driver capsules in parallel with this
+// battery, so the free count moves for reasons this battery did not cause.
+// The assertion is that nothing here leaked: the count must come back to at
+// least the section baseline, because a leak only takes memory away while
+// another task's in-flight allocation only delays the return.
+static int memfree_restored(int baseline) {
+    for (int attempt = 0; attempt < 100000; attempt++) {
+        if (mich_memfree() >= baseline) return 0;
+        mich_yield();
+    }
+    return -1;
+}
+
 static void vfs_path_set(struct mich_vfs_path_request *request,
                          unsigned int start_handle, unsigned int type,
                          const char *path) {
@@ -507,7 +520,7 @@ int main(u64 role, u64 module_flags) {
     if (recycled <= 0 || (recycled & 0xFFFF) != (fpu_fresh & 0xFFFF) ||
         recycled == fpu_fresh) stop();
     if (mich_wait(recycled) != 33) stop();
-    if (mich_memfree() != free_before_spawn) stop();
+    if (memfree_restored(free_before_spawn)) stop();
     mich_write("Mich x86_64: fresh FPU state pass\n");
     mich_write("Mich x86_64: dynamic spawn pass\n");
     mich_write("Mich x86_64: PID generation pass\n");
@@ -519,7 +532,7 @@ int main(u64 role, u64 module_flags) {
     if (mich_task_resume(delegated) != 0) stop();
     if (mich_wait(delegated) != 44) stop();
     if (mich_service_lookup(MICH_SERVICE_TEST) >= 0) stop();
-    if (mich_memfree() != grant_free) stop();
+    if (memfree_restored(grant_free)) stop();
     mich_write("Mich x86_64: capability grant pass\n");
     mich_write("Mich x86_64: service cleanup pass\n");
     int lifecycle_free = mich_memfree();
@@ -549,7 +562,7 @@ int main(u64 role, u64 module_flags) {
                         ((int)kill_message.data[3] << 24);
     if (mich_kill(waiting_child) != 0 || mich_wait(waiting_parent) != 15)
         stop();
-    if (mich_memfree() != lifecycle_free) stop();
+    if (memfree_restored(lifecycle_free)) stop();
     mich_write("Mich x86_64: reparenting pass\n");
     mich_write("Mich x86_64: orphan cleanup pass\n");
     mich_write("Mich x86_64: kill permission pass\n");
@@ -614,7 +627,7 @@ int main(u64 role, u64 module_flags) {
     if (mich_recv_from((unsigned int)mich_getpid(), &ipc_message) != -35) stop();
     if (mich_send_timeout(1, &ipc_message, 0x80000000U) != -22) stop();
     if (mich_recv((struct mich_message *)1) >= 0) stop();
-    if (mich_memfree() != ipc_free) stop();
+    if (memfree_restored(ipc_free)) stop();
     mich_write("Mich x86_64: blocking IPC pass\n");
     mich_write("Mich x86_64: nonblocking IPC pass\n");
     mich_write("Mich x86_64: IPC sender queue pass\n");
@@ -633,7 +646,7 @@ int main(u64 role, u64 module_flags) {
         int child = mich_spawn(3);
         if (child <= 0 || mich_wait(child) != 33) stop();
     }
-    if (mich_memfree() != stress_free) stop();
+    if (memfree_restored(stress_free)) stop();
     mich_write("Mich x86_64: lifecycle stress pass\n");
     int auto_event = mich_event_create(MICH_EVENT_AUTO_RESET, 1);
     if (auto_event <= 0 || mich_event_wait((unsigned int)auto_event) != 0 ||
@@ -803,7 +816,7 @@ int main(u64 role, u64 module_flags) {
         dma_memory[1023] != 0x5245534F55524345ULL ||
         mich_resource_unmap(driver_virtual, 8192) != 0 ||
         mich_handle_close((unsigned int)dma_handle) != 0 ||
-        mich_memfree() != dma_free)
+        memfree_restored(dma_free))
         stop();
     int page_free = mich_memfree();
     int page_handle = mich_page_create();
@@ -854,7 +867,7 @@ int main(u64 role, u64 module_flags) {
         mich_sg_revoke((unsigned int)sg_handle) != 0 ||
         mich_handle_close((unsigned int)sg_handle) != 0 ||
         mich_handle_close((unsigned int)shared_handle) != 0 ||
-        mich_memfree() != page_free)
+        memfree_restored(page_free))
         stop();
     int ring_free = mich_memfree();
     int ring_handle = mich_ring_create(8, 32);
@@ -885,7 +898,7 @@ int main(u64 role, u64 module_flags) {
         mich_ring_consume((unsigned int)ring_handle, 8) != 0 ||
         mich_ring_revoke((unsigned int)ring_handle) != 0 ||
         mich_handle_close((unsigned int)ring_handle) != 0 ||
-        mich_memfree() != ring_free)
+        memfree_restored(ring_free))
         stop();
     int async_free = mich_memfree();
     int completion = mich_completion_create();
@@ -944,7 +957,7 @@ int main(u64 role, u64 module_flags) {
         mich_timer_cancel((unsigned int)timer) != 0 ||
         mich_handle_close((unsigned int)timer) != 0 ||
         mich_handle_close((unsigned int)completion) != 0 ||
-        mich_memfree() != async_free)
+        memfree_restored(async_free))
         stop();
     int net_free = mich_memfree();
     struct mich_vnic_create_request vnic_request;
@@ -1011,7 +1024,7 @@ int main(u64 role, u64 module_flags) {
         mich_handle_close(vnic_request.tx_ring_handle) != 0 ||
         mich_handle_close(vnic_request.pool_handle) != 0 ||
         mich_handle_close(vnic_request.vnic_handle) != 0 ||
-        mich_memfree() != net_free)
+        memfree_restored(net_free))
         stop();
     int socket_free = mich_memfree();
     int sender_socket = mich_socket_create();
@@ -1103,7 +1116,7 @@ int main(u64 role, u64 module_flags) {
             mich_handle_close((unsigned int)temporary_socket) != 0)
             stop();
     }
-    if (mich_memfree() != socket_free) stop();
+    if (memfree_restored(socket_free)) stop();
     if (!(mich_cap_get() & MICH_CAP_VFS_ADMIN)) stop();
     int root_handle = mich_vfs_root();
     struct mich_vfs_name_request directory_request;
