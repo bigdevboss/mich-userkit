@@ -20,6 +20,7 @@
 #define ISIG 0x1
 #define ICANON 0x2
 #define ECHO 0x8
+#define TOSTOP 0x10
 
 typedef unsigned int tcflag_t;
 typedef unsigned char cc_t;

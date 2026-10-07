@@ -1556,6 +1556,85 @@ static int tty_demo(void) {
     if (!WIFSIGNALED(typed_status) || WTERMSIG(typed_status) != SIGKILL)
         return -1;
 
+    // The foreground rules. The demo's own group takes the line, so a
+    // child that put itself in a group of its own is background: its read
+    // stops it with SIGTTIN, an ignored SIGTTIN fails the read with EIO
+    // rather than parking forever, and a write stops it with SIGTTOU once
+    // the line carries TOSTOP.
+    if (setpgid(0, 0)) return -1;
+    pid_t demo_group = getpgrp();
+    if (demo_group <= 0) return -1;
+    if (tcsetpgrp(console, demo_group)) return -1;
+    if (tcgetpgrp(console) != demo_group) return -1;
+
+    int background = fork();
+    if (background < 0) return -1;
+    if (background == 0) {
+        if (setpgid(0, 0)) _exit(51);
+        char byte[1];
+        errno = 0;
+        if (read(console, byte, sizeof(byte)) != -1 || errno != EINTR)
+            _exit(52);
+        _exit(53);
+    }
+    int background_status = 0;
+    if (waitpid(background, &background_status, WUNTRACED) != background)
+        return -1;
+    if (!WIFSTOPPED(background_status) ||
+        WSTOPSIG(background_status) != SIGTTIN)
+        return -1;
+    if (kill(background, SIGCONT)) return -1;
+    if (waitpid(background, &background_status, 0) != background) return -1;
+    if (!WIFEXITED(background_status) ||
+        WEXITSTATUS(background_status) != 53)
+        return -1;
+
+    int muting = fork();
+    if (muting < 0) return -1;
+    if (muting == 0) {
+        if (setpgid(0, 0)) _exit(54);
+        struct sigaction ignore;
+        sigemptyset(&ignore.sa_mask);
+        ignore.sa_handler = SIG_IGN;
+        ignore.sa_flags = 0;
+        ignore.sa_restorer = 0;
+        if (sigaction(SIGTTIN, &ignore, 0)) _exit(55);
+        char byte[1];
+        errno = 0;
+        if (read(console, byte, sizeof(byte)) != -1 || errno != EIO)
+            _exit(56);
+        _exit(57);
+    }
+    if (waitpid(muting, &background_status, 0) != muting) return -1;
+    if (!WIFEXITED(background_status) ||
+        WEXITSTATUS(background_status) != 57)
+        return -1;
+
+    struct termios loud;
+    if (tcgetattr(console, &loud)) return -1;
+    loud.c_lflag |= (tcflag_t)TOSTOP;
+    if (tcsetattr(console, TCSANOW, &loud)) return -1;
+    int writer = fork();
+    if (writer < 0) return -1;
+    if (writer == 0) {
+        if (setpgid(0, 0)) _exit(58);
+        // A stopped write resumes with zero bytes moved, so the child
+        // checks for exactly that: the gate ran and nothing left.
+        if (write(console, "z", 1) != 0) _exit(59);
+        _exit(60);
+    }
+    if (waitpid(writer, &background_status, WUNTRACED) != writer) return -1;
+    if (!WIFSTOPPED(background_status) ||
+        WSTOPSIG(background_status) != SIGTTOU)
+        return -1;
+    if (kill(writer, SIGCONT)) return -1;
+    if (waitpid(writer, &background_status, 0) != writer) return -1;
+    if (!WIFEXITED(background_status) ||
+        WEXITSTATUS(background_status) != 60)
+        return -1;
+    loud.c_lflag &= ~(tcflag_t)TOSTOP;
+    if (tcsetattr(console, TCSANOW, &loud)) return -1;
+
     // /dev/null: reads answer end of file and writes are swallowed.
     int null = open("/dev/null", O_RDWR);
     if (null < 0) return -1;
