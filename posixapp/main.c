@@ -18,11 +18,14 @@ static int string_equals(const char *left, const char *right) {
 static int wait_for_go(void) {
     for (unsigned long attempt = 0; attempt < 100000u; attempt++) {
         char flag = 0;
-        if (lseek(0, 0, 0) != 0) return -1;
-        if (read(0, &flag, 1) != 1) return -1;
+        // A seek plus a read would move the cursor the parent is about to
+        // write through, so the poll reads its byte at a fixed offset.
+        if (pread(0, &flag, 1, 0) != 1) return -1;
         if (flag == 'g') return 0;
         mich_yield();
     }
+    // A silent -1 here reads as a mystery hang from the outside.
+    mich_write("Mich x86_64: POSIX execve fixture flag timeout\n");
     return -1;
 }
 
@@ -44,8 +47,8 @@ int main(int argc, char **argv) {
 
     static const char payload[] = "mich-posix-stage5";
     char buffer[32];
-    if (lseek(1, 0, 0) != 0 ||
-        read(1, buffer, sizeof(payload) - 1) != (ssize_t)(sizeof(payload) - 1))
+    if (pread(1, buffer, sizeof(payload) - 1, 0) !=
+        (ssize_t)(sizeof(payload) - 1))
         return 65;
     buffer[sizeof(payload) - 1] = 0;
     if (!string_equals(buffer, payload)) return 66;

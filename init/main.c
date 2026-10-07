@@ -26,9 +26,49 @@
 
 typedef unsigned long long u64;
 
-static void stop(void) {
+// The battery parks on a silent spin, so a guard that trips must name its
+// line: a red run would otherwise look like a runner timeout with no clue
+// about the check that died.
+static void park(void) {
     for (;;) __asm__ volatile("pause");
 }
+
+static void report_line(const char *tag, unsigned int value) {
+    char message[64];
+    unsigned int cursor = 0;
+    while (tag[cursor]) {
+        message[cursor] = tag[cursor];
+        cursor++;
+    }
+    char digits[4];
+    unsigned int index = 0;
+    while (index < 4) {
+        digits[3 - index] = (char)('0' + value % 10);
+        value /= 10;
+        index++;
+    }
+    index = 0;
+    while (index < 4) {
+        message[cursor] = digits[index];
+        cursor++;
+        index++;
+    }
+    message[cursor++] = '\n';
+    message[cursor] = 0;
+    mich_write(message);
+}
+
+static void fail_at(unsigned int line) {
+    report_line("Mich x86_64: battery guard at line ", line);
+    park();
+}
+
+static int fail_check(unsigned int line) {
+    report_line("Mich x86_64: battery check at line ", line);
+    return -1;
+}
+
+#define stop() fail_at(__LINE__)
 
 static void vfs_path_set(struct mich_vfs_path_request *request,
                          unsigned int start_handle, unsigned int type,
@@ -53,12 +93,12 @@ static int posix_user_test(void) {
     char cwd[32];
     struct stat info;
     int descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (descriptor != 0) return -1;
+    if (descriptor != 0) return fail_check(__LINE__);
     if (write(descriptor, payload, 3) != 3 || lseek(descriptor, 0, 0) != 0 ||
         read(descriptor, readback, 3) != 3 || readback[0] != 'a' ||
         readback[1] != 'b' || readback[2] != 'c') {
         mich_write("Mich x86_64: POSIX user IO FAIL\n");
-        return -1;
+        return fail_check(__LINE__);
     }
     if (fstat(descriptor, &info) || !S_ISREG(info.st_mode) ||
         (info.st_mode & 0777u) != 0600u || fcntl(descriptor, F_GETFD) !=
@@ -66,12 +106,12 @@ static int posix_user_test(void) {
         fcntl(descriptor, F_GETFD) != 0 || truncate(path, 1) ||
         fstat(descriptor, &info) || info.st_size != 1 || close(descriptor)) {
         mich_write("Mich x86_64: POSIX user stat FAIL\n");
-        return -1;
+        return fail_check(__LINE__);
     }
     descriptor = open(path, O_RDONLY);
     if (descriptor != 0 || dup(descriptor) != 1 || close(1) || close(descriptor)) {
         mich_write("Mich x86_64: POSIX user dup FAIL\n");
-        return -1;
+        return fail_check(__LINE__);
     }
     if (mkdir(directory, 0700) || chdir(directory) || !getcwd(cwd, sizeof(cwd)) ||
         cwd[0] != '/' || cwd[1] != 'p' || cwd[2] != 'o' || cwd[3] != 's' ||
@@ -80,7 +120,7 @@ static int posix_user_test(void) {
         cwd[12] != 'd' || cwd[13] != 'i' || cwd[14] != 'r' || cwd[15] ||
         chdir("/") || unlink(path) || rmdir(directory)) {
         mich_write("Mich x86_64: POSIX user path FAIL\n");
-        return -1;
+        return fail_check(__LINE__);
     }
     return 0;
 }
@@ -97,71 +137,79 @@ static int posix_user_process_test(void) {
     char buffer[32];
     int status = -1;
 
-    if (mkdir(directory, 0700)) return -1;
+    if (mkdir(directory, 0700)) return fail_check(__LINE__);
     // Fixture contract: 0 sync flag, 1 payload, 2 CLOEXEC victim.
     int sync_fd = open("/posix-proc/sync", O_RDWR | O_CREAT, 0600);
     int data_fd = open("/posix-proc/data", O_RDWR | O_CREAT, 0600);
     int gone_fd = open("/posix-proc/gone", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (sync_fd != 0 || data_fd != 1 || gone_fd != 2) return -1;
+    if (sync_fd != 0 || data_fd != 1 || gone_fd != 2) return fail_check(__LINE__);
     if (write(sync_fd, "w", 1) != 1 ||
         write(data_fd, payload, sizeof(payload) - 1) !=
         (ssize_t)(sizeof(payload) - 1))
-        return -1;
-    if (chdir(directory)) return -1;
+        return fail_check(__LINE__);
+    if (chdir(directory)) return fail_check(__LINE__);
 
     errno = 0;
     if (execve("/boot/absent-image", args_missing, empty_env) != -1 ||
         errno != ENOENT)
-        return -1;
+        return fail_check(__LINE__);
     errno = 0;
     if (execve("/boot", args_fixture, empty_env) != -1 || errno != EISDIR)
-        return -1;
+        return fail_check(__LINE__);
     for (int index = 0; index < 33; index++) many[index] = "x";
     many[33] = 0;
     errno = 0;
     if (execve("/boot/posixapp", many, empty_env) != -1 || errno != E2BIG)
-        return -1;
+        return fail_check(__LINE__);
     for (int index = 0; index < 2049; index++) huge[index] = 'h';
     huge[2049] = 0;
     char *const args_huge[] = { huge, 0 };
     errno = 0;
     if (execve("/boot/posixapp", args_huge, empty_env) != -1 || errno != E2BIG)
-        return -1;
+        return fail_check(__LINE__);
     errno = 0;
     char **volatile bad_argv = (char **)(u64)1;
     if (execve("/boot/posixapp", bad_argv, empty_env) != -1 ||
         errno != EINVAL)
-        return -1;
+        return fail_check(__LINE__);
     // Every failed execve above must leave descriptors and image intact.
     if (lseek(data_fd, 0, 0) != 0 ||
         read(data_fd, buffer, sizeof(payload) - 1) !=
         (ssize_t)(sizeof(payload) - 1))
-        return -1;
-    if (fcntl(gone_fd, F_GETFD) != FD_CLOEXEC) return -1;
+        return fail_check(__LINE__);
+    if (fcntl(gone_fd, F_GETFD) != FD_CLOEXEC) return fail_check(__LINE__);
 
-    if (getpid() != 1 || getppid() != 0) return -1;
+    if (getpid() != 1 || getppid() != 0) return fail_check(__LINE__);
     int child = fork();
-    if (child < 0) return -1;
+    if (child < 0) return fail_check(__LINE__);
     if (!child) {
         execve("/boot/posixapp", args_fixture, env_fixture);
         _exit(9);
     }
     // The child parks on the sync flag, so it cannot exit before this
     // WNOHANG poll observes it alive.
-    if (waitpid(child, &status, WNOHANG) != 0) return -1;
-    if (lseek(sync_fd, 0, 0) != 0 || write(sync_fd, "g", 1) != 1) return -1;
-    if (waitpid(child, &status, 0) != child) return -1;
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 7) return -1;
+    if (waitpid(child, &status, WNOHANG) != 0) return fail_check(__LINE__);
+    // The child polls this same open file description, so the publish must
+    // not be a seek plus a write: the child's read ships the shared cursor
+    // between those two syscalls and the flag lands past the byte the child
+    // polls. pwrite pins the publish to byte 0. The same reasoning pins the
+    // poll in posixapp to pread.
+    if (pwrite(sync_fd, "g", 1, 0) != 1) return fail_check(__LINE__);
+    if (waitpid(child, &status, 0) != child) return fail_check(__LINE__);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 7) {
+        report_line("Mich x86_64: child status ", (unsigned int)status);
+        return fail_check(__LINE__);
+    }
     errno = 0;
-    if (waitpid(child, &status, 0) != -1 || errno != ECHILD) return -1;
+    if (waitpid(child, &status, 0) != -1 || errno != ECHILD) return fail_check(__LINE__);
     errno = 0;
-    if (waitpid(9999, &status, 0) != -1 || errno != ECHILD) return -1;
+    if (waitpid(9999, &status, 0) != -1 || errno != ECHILD) return fail_check(__LINE__);
 
-    if (close(sync_fd) || close(data_fd) || close(gone_fd)) return -1;
+    if (close(sync_fd) || close(data_fd) || close(gone_fd)) return fail_check(__LINE__);
     if (chdir("/") || unlink("/posix-proc/sync") ||
         unlink("/posix-proc/data") || unlink("/posix-proc/gone") ||
         rmdir(directory))
-        return -1;
+        return fail_check(__LINE__);
     return 0;
 }
 
@@ -204,7 +252,7 @@ __attribute__((noinline)) static int fork_burst(int exit_code) {
 }
 
 __attribute__((noinline)) static int posix_stress_test(void) {
-    if (stress_fd_rounds()) return -1;
+    if (stress_fd_rounds()) return fail_check(__LINE__);
     mich_write("Mich stress: fd exhaustion stable\n");
     int n = fork_burst(3);
     mich_write("Mich stress: burst=");
@@ -223,15 +271,15 @@ static int posix_application_test(u64 module_flags) {
         demo_envp : demo_plain;
     int status = -1;
     int child = fork();
-    if (child < 0) return -1;
+    if (child < 0) return fail_check(__LINE__);
     if (!child) {
         execve("/boot/posixdemo", demo_argv, environment);
         _exit(9);
     }
     // The application runs to completion without a sync contract, so a
     // blocking wait is the honest rendezvous here.
-    if (waitpid(child, &status, 0) != child) return -1;
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+    if (waitpid(child, &status, 0) != child) return fail_check(__LINE__);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return fail_check(__LINE__);
     return 0;
 }
 
@@ -239,7 +287,7 @@ int main(u64 role, u64 module_flags) {
     int pid = mich_getpid();
     if (role == 0) {
         mich_write("Mich x86_64: idle task alive\n");
-        stop();
+        park();
     }
     if (role == 3) return 33;
     if (role == 4) {
@@ -1325,6 +1373,6 @@ int main(u64 role, u64 module_flags) {
         if (posix_stress_test()) stop();
     }
     mich_syscall0(4);
-    stop();
+    park();
     return 0;
 }
