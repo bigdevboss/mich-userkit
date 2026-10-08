@@ -484,7 +484,7 @@ int main(u64 role, u64 module_flags) {
     if (mxcsr != 0x3F80) stop();
     int free_before_wait = mich_memfree();
     if (mich_wait(-1) != 134) stop();
-    if (mich_memfree() <= free_before_wait) stop();
+    if (memfree_restored(free_before_wait + 1)) stop();
     mich_write("Mich x86_64: E820 PMM pass\n");
     mich_write("Mich x86_64: wait any pass\n");
     mich_write("Mich x86_64: blocking wait pass\n");
