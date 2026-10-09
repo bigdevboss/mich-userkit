@@ -1309,6 +1309,7 @@ int main(unsigned long long argument) {
             return 11;
         process_tx_batch(&capsule);
         if (probes_poll(&capsule) < 0) return 13;
+        probes_release(&capsule);
 #ifndef VIRTIO_NET_SAFE_ARTIFACT
         restart_test_poll(&capsule);
 #endif

@@ -4,6 +4,7 @@
 #include <mich/net_interface.h>
 #include <mich/socket.h>
 #include <mich/timer.h>
+#include <mich/event.h>
 
 static const unsigned char passive_message[] = {
     'P', 'A', 'S', 'S', 'I', 'V', 'E'
@@ -256,19 +257,58 @@ void probes_on_slaac(struct virtio_net_capsule *capsule) {
         mich_write("Mich virtio-net: external IPv6 socket queued\n");
 }
 
-int probes_external_complete(const struct virtio_net_capsule *capsule) {
-    if (!capsule) return 0;
+static int probes_ipv6_complete(const struct virtio_net_capsule *capsule) {
+    return capsule->ipv6_dad_complete & capsule->ipv6_slaac_ready &
+        capsule->ipv6_ping_complete & capsule->udpv6_probe_complete &
+        capsule->socket6_sent;
+}
+
+// Everything the probes drive themselves, without the passive side, which
+// only a profile that puts a peer on the listener ever finishes.
+static int probes_core_complete(const struct virtio_net_capsule *capsule) {
     return capsule->external_probe_enabled & capsule->ipv4_configured &
         capsule->ping_complete & capsule->udp_probe_complete &
         capsule->socket_udp_complete & capsule->tcp_probe_complete &
-        capsule->stream_closed &
-        (capsule->passive_received == sizeof(passive_message) + 1) &
-        capsule->passive_closed & capsule->ipv6_dad_complete &
-        capsule->ipv6_slaac_ready &
-        capsule->ipv6_ping_complete & capsule->udpv6_probe_complete &
-        capsule->socket6_sent & capsule->interrupt_seen &
+        capsule->stream_closed & probes_ipv6_complete(capsule) &
+        capsule->interrupt_seen &
         capsule->batch_reported & capsule->tx_batch_reported &
         capsule->itr_reported;
+}
+
+int probes_external_complete(const struct virtio_net_capsule *capsule) {
+    if (!capsule) return 0;
+    return probes_core_complete(capsule) &
+        (capsule->passive_received == sizeof(passive_message) + 1) &
+        capsule->passive_closed;
+}
+
+static void release_socket(unsigned int *handle) {
+    if (!*handle) return;
+    mich_handle_close(*handle);
+    *handle = 0;
+}
+
+// The probes own the sockets they open, so a finished set has to hand the
+// pages back. The init battery asserts an absolute free-page floor while this
+// capsule is resident, and sockets held for the capsule's whole lifetime put
+// that floor out of reach whenever the two overlap. The IPv6 phase is the last
+// one every profile runs, so it is the release point even where the peer never
+// finishes the TCP stream; a profile whose peer does drive the passive side
+// keeps those sockets until their own lifecycle ends, and the restart profiles
+// keep everything because their timing snapshots read the listener after.
+void probes_release(struct virtio_net_capsule *capsule) {
+    if (!capsule || capsule->sockets_released || capsule->timing_enabled)
+        return;
+    if (!capsule->external_probe_enabled) return;
+    if (!probes_ipv6_complete(capsule)) return;
+    if (capsule->accepted_handle && !capsule->passive_closed) return;
+    release_socket(&capsule->stream_handle);
+    release_socket(&capsule->accepted_handle);
+    release_socket(&capsule->listener_handle);
+    release_socket(&capsule->socket_handle);
+    release_socket(&capsule->socket6_handle);
+    capsule->sockets_released = 1;
+    mich_write("Mich virtio-net: probe sockets released pass\n");
 }
 
 int probes_poll(struct virtio_net_capsule *capsule) {

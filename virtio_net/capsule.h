@@ -141,6 +141,7 @@ struct virtio_net_capsule {
     unsigned int passive_rx_packets;
     unsigned int passive_rx_drops;
     unsigned int passive_closed;
+    unsigned int sockets_released;
     unsigned int offered_address;
     unsigned int offered_netmask;
     unsigned int offered_gateway;
@@ -173,5 +174,6 @@ void probes_on_ipv4_up(struct virtio_net_capsule *capsule);
 void probes_on_slaac(struct virtio_net_capsule *capsule);
 int probes_poll(struct virtio_net_capsule *capsule);
 int probes_external_complete(const struct virtio_net_capsule *capsule);
+void probes_release(struct virtio_net_capsule *capsule);
 
 #endif
